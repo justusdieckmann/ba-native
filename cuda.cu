@@ -1,20 +1,25 @@
 #include "cuda.cuh"
 #include <cstdio>
 #include <cmath>
+#include <fstream>
 
-const glm::vec<3, size_t> SIZE(50, 50, 16);
+const glm::vec<3, size_t> SIZE(100, 100, 16);
 
 const size_t CELLS = SIZE.x * SIZE.y * SIZE.z;
 
-const float deltaT = 0.005f;
+__managed__ float deltaT = 0.005f;
 
-const float viscosity = 0.005;
-const float cellwidth = 0.05;
+__managed__ float viscosity = 0.005;
+__managed__ float cellwidth = 0.05;
 
-const float EPSILON = 0.0001;
+__managed__ float EPSILON = 0.00001;
+
+__managed__ bool changes = false;
 
 bool fanStatus = false;
 bool desiredFanStatus = false;
+
+bool pause = false;
 
 __managed__ float currentTime;
 
@@ -76,8 +81,14 @@ __global__ void updatePSingleIteration(glm::vec3 *srcU, const float *srcP, float
             + srcU[i2p].y - srcU[i2p].y
             + srcU[i3p].z - srcU[i3p].z
     );
-
-    destP[i] = ((cellwidth * cellwidth) / 6.f) * (srcP[i1p] + srcP[i1n] + srcP[i2p] + srcP[i2n] + srcP[i3p] + srcP[i3n] - ud);
+    float oldP = destP[i];
+    float newP = ((cellwidth * cellwidth) / 6.f) * (srcP[i1p] + srcP[i1n] + srcP[i2p] + srcP[i2n] + srcP[i3p] + srcP[i3n] - ud);
+    destP[i] = newP;
+    if ((abs(newP) - abs(oldP)) / (abs(newP) + abs(oldP)) > EPSILON) {
+        if (!changes) {
+            changes = true;
+        }
+    }
 }
 
 __global__ void updateP(glm::vec3 *srcU, float *srcP, glm::vec<3, int> size) {
@@ -143,7 +154,9 @@ __global__ void renderToBuffer(uchar4 *destImg, glm::vec3 *srcU, glm::vec<3, int
 }
 
 void render(uchar4 *img, const int width, const int height) {
-    simulateStep();
+    for(int i = 0; i < 30; i++) {
+        simulateStep();
+    }
     dim3 threadsPerBlock(1, 1);
     dim3 numBlocks(SIZE.x, SIZE.y);
     renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, cudau1, SIZE);
@@ -171,12 +184,16 @@ void turnOnFan() {
     gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
     gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t i = 6; i < 10; i++) {
+    for (size_t i = 12; i < 16; i++) {
         for (size_t z = 0; z < SIZE.z; z++)  {
             u1[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(1.f, 0, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(1.f, 0, 0);
             u1[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, .75f, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, .75f, 0);
+            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(-1.f, 0, 0);
+            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(-1.f, 0, 0);
+            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, .75f, 0);
+            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, .75f, 0);
         }
     }
 
@@ -188,17 +205,25 @@ void turnOffFan() {
     gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
     gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t i = 4; i < 12; i++) {
+    for (size_t i = 4; i < 16; i++) {
         for (size_t z = 0; z < SIZE.z; z++)  {
             u1[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
             u1[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, 0, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, 0, 0);
+            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(0, 0, 0);
+            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(0, 0, 0);
+            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
+            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
         }
     }
 
     gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
+}
+
+void togglePause() {
+    pause = !pause;
 }
 
 void setFan(bool fan) {
@@ -210,6 +235,9 @@ bool getFan() {
 }
 
 void simulateStep() {
+    if (pause) {
+        return;
+    }
     if (desiredFanStatus != fanStatus) {
         fanStatus = desiredFanStatus;
         if (fanStatus) {
@@ -224,7 +252,13 @@ void simulateStep() {
     gpuErrchk(cudaDeviceSynchronize());
     std::swap(u1, u2);
     std::swap(cudau1, cudau2);
-    updateP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
+    // updateP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
+    do {
+        changes = false;
+        updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, SIZE);
+        std::swap(cudap1, cudap2);
+        std::swap(p1, p2);
+    } while(changes);
     /*for (int i = 0; i < 100; i++) {
         updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, glm::vec3(SIZE, SIZE, SIZE));
         gpuErrchk(cudaDeviceSynchronize());
@@ -259,3 +293,48 @@ void printLayer(size_t z) {
     printf("\n");
 
 }
+
+void exportFrame() {
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(p1, cudap1, sizeof(float) * CELLS, cudaMemcpyDeviceToHost));
+
+    std::ofstream out;
+    out.open( "bin.dat", std::ios::out | std::ios::binary);
+
+    for (int x = 1; x < SIZE.x - 1; x++) {
+        for (int y = 1; y < SIZE.y - 1; y++) {
+            for (int z = 1; z < SIZE.z - 1; z++) {
+                int i = pack(SIZE.x, SIZE.y, SIZE.z, x, y, z);
+                out.write(reinterpret_cast<const char *>(&u1[i].x), sizeof(float));
+                out.write(reinterpret_cast<const char *>(&u1[i].y), sizeof(float));
+                out.write(reinterpret_cast<const char *>(&u1[i].z), sizeof(float));
+                out.write(reinterpret_cast<const char *>(&p1[i]), sizeof(float));
+            }
+        }
+    }
+    out.close();
+}
+
+void importFrame() {
+
+    turnOffFan();
+
+    std::ifstream in;
+    in.open("scenario.dat", std::ios::in | std::ios::binary);
+
+    for (int x = 1; x < SIZE.x - 1; x++) {
+        for (int y = 1; y < SIZE.y - 1; y++) {
+            for (int z = 1; z < SIZE.z - 1; z++) {
+                int i = pack(SIZE.x, SIZE.y, SIZE.z, x, y, z);
+                in.read(reinterpret_cast<char *>(&u1[i].x), sizeof(float));
+                in.read(reinterpret_cast<char *>(&u1[i].y), sizeof(float));
+                in.read(reinterpret_cast<char *>(&u1[i].z), sizeof(float));
+                in.read(reinterpret_cast<char *>(&p1[i]), sizeof(float));
+            }
+        }
+    }
+    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudap1, p1, sizeof(float) * CELLS, cudaMemcpyHostToDevice));
+    in.close();
+}
+

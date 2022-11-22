@@ -26,10 +26,27 @@ static void error_callback(int error, const char* description) {
 }
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
-    if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
-        setFan(!getFan());
+    if (action != GLFW_PRESS) {
+        return;
+    }
+    switch (key) {
+        case GLFW_KEY_ESCAPE:
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+            break;
+        case GLFW_KEY_SPACE:
+            setFan(!getFan());
+            break;
+        case GLFW_KEY_P:
+            togglePause();
+            break;
+        case GLFW_KEY_E:
+            exportFrame();
+            break;
+        case GLFW_KEY_I:
+            importFrame();
+            break;
+        default:
+            break;
     }
 }
 
