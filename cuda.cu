@@ -145,7 +145,7 @@ __global__ void renderToBuffer(uchar4 *destImg, glm::vec3 *srcU, glm::vec<3, int
     size_t z = 8;
 
     size_t iP = pack(size.x, size.y, size.z, x, y, z);
-    size_t iI = y * size.x + x;
+    size_t iI = (size.y - y - 1) * size.x + x; // Invert opengl image.
     glm::vec3 p = srcU[iP];
     destImg[iI] = {
             floatToChar(p.x), floatToChar(p.y), floatToChar(p.z), 255
@@ -253,18 +253,15 @@ void simulateStep() {
     std::swap(u1, u2);
     std::swap(cudau1, cudau2);
     // updateP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
+    int iterations = 0;
     do {
         changes = false;
         updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, SIZE);
         std::swap(cudap1, cudap2);
         std::swap(p1, p2);
+        iterations++;
     } while(changes);
-    /*for (int i = 0; i < 100; i++) {
-        updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, glm::vec3(SIZE, SIZE, SIZE));
-        gpuErrchk(cudaDeviceSynchronize());
-        std::swap(cudap1, cudap2);
-        std::swap(p1, p2);
-    }*/
+    printf("Iterations: %i\n", iterations);
     updateUFromP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
     // printLayer(1);
 }

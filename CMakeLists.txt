@@ -21,3 +21,10 @@ target_link_libraries(GasSimulation glfw glad glm)
 
 set_target_properties(GasSimulation PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON)
+
+add_executable (Test "cuda.cu" "cuda.cuh" "test.cpp" "Timer.cpp" "Timer.h")
+
+target_link_libraries(Test glfw glad glm)
+
+set_target_properties(Test PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON)
