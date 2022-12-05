@@ -7,7 +7,7 @@ const glm::vec<3, size_t> SIZE(100, 100, 16);
 
 const size_t CELLS = SIZE.x * SIZE.y * SIZE.z;
 
-__managed__ float deltaT = 0.005f;
+__managed__ float deltaT = 0.01f;
 
 __managed__ float viscosity = 0.005;
 __managed__ float cellwidth = 0.05;
@@ -154,7 +154,7 @@ __global__ void renderToBuffer(uchar4 *destImg, glm::vec3 *srcU, glm::vec<3, int
 }
 
 void render(uchar4 *img, const int width, const int height) {
-    for(int i = 0; i < 30; i++) {
+    for(int i = 0; i < 2; i++) {
         simulateStep();
     }
     dim3 threadsPerBlock(1, 1);
@@ -259,9 +259,12 @@ void simulateStep() {
         updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, SIZE);
         std::swap(cudap1, cudap2);
         std::swap(p1, p2);
+        cudaDeviceSynchronize();
         iterations++;
     } while(changes);
-    printf("Iterations: %i\n", iterations);
+    if (iterations > 1) {
+        printf("Iterations: %i\n", iterations);
+    }
     updateUFromP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
     // printLayer(1);
 }
