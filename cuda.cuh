@@ -1,8 +1,11 @@
-#include <cuda_runtime.h>
-#include "glm/glm.hpp"
-#include <iostream>
+#ifndef GASSIMULATION_CUDA_CUH
+#define GASSIMULATION_CUDA_CUH
 
-extern const glm::vec<3, size_t> SIZE;
+#include <cuda_runtime.h>
+#include <iostream>
+#include "vec3.h"
+
+extern const vec3<size_t> SIZE;
 
 void render(uchar4* img, int width, int height);
 
@@ -35,3 +38,5 @@ void printP(size_t z);
 void exportFrame();
 
 void importFrame();
+
+#endif //GASSIMULATION_CUDA_CUH

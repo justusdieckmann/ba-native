@@ -13,9 +13,9 @@ add_subdirectory(lib/glfw)
 add_subdirectory(lib/glad)
 add_subdirectory(lib/glm)
 
-add_executable (GasSimulation "cuda.cu" "cuda.cuh" "main.cpp" "Timer.cpp" "Timer.h")
+add_executable (GasSimulation "cuda.cu" "cuda.cuh" "main.cpp" "Timer.cpp" "Timer.h" include/array.h include/vec3.h)
 
-include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES} include)
 
 target_link_libraries(GasSimulation glfw glad glm)
 

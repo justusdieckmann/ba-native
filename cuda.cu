@@ -1,18 +1,21 @@
 #include "cuda.cuh"
+#include "array.h"
 #include <cstdio>
 #include <cmath>
 #include <fstream>
 
-const glm::vec<3, size_t> SIZE(100, 100, 16);
+const size_t Q = 19;
+typedef array<float, Q> cell_t;
+typedef vec3<float> vec3f;
+
+const vec3<size_t> SIZE {100, 100, 16};
 
 const size_t CELLS = SIZE.x * SIZE.y * SIZE.z;
 
 __managed__ float deltaT = 0.01f;
 
-__managed__ float viscosity = 0.005;
-__managed__ float cellwidth = 0.05;
-
-__managed__ float EPSILON = 0.00001;
+__managed__ float viscosity = 0.1;
+__managed__ float cellwidth = 0.01;
 
 __managed__ bool changes = false;
 
@@ -23,130 +26,126 @@ bool pause = false;
 
 __managed__ float currentTime;
 
-glm::vec3 *u1;
-glm::vec3 *u2;
+__constant__ const array<vec3f, Q> offsets {
+        0, 0, 0,
+        -1, 0, 0,
+        1, 0, 0,
+        0, -1, 0,
+        0, 1, 0,
+        0, 0, -1,
+        0, 0, 1,
+        -1, -1, 0,
+        -1, 1, 0,
+        1, -1, 0,
+        1, 1, 0,
+        -1, 0, -1,
+        -1, 0, 1,
+        1, 0, -1,
+        1, 0, 1,
+        0, -1, -1,
+        0, -1, 1,
+        0, 1, -1,
+        0, 1, 1,
+};
 
-glm::vec3 *cudau1;
-glm::vec3 *cudau2;
+__constant__ const array<float, Q> wis {
+    1.f / 3,
+    1.f / 18,
+    1.f / 18,
+    1.f / 18,
+    1.f / 18,
+    1.f / 18,
+    1.f / 18,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+    1.f / 36,
+};
 
-float *p1;
-float *p2;
+cell_t *u1;
+cell_t *u2;
 
-float *cudap1;
-float *cudap2;
+cell_t *cudau1;
+cell_t *cudau2;
 
 __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, size_t y, size_t z) {
     return (z * h + y) * w + x;
 }
 
-__global__ void updateU(glm::vec3 *src, glm::vec3 *dest, float *srcP, glm::vec<3, int> size) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
-
-    size_t i = pack(size.x, size.y, size.z, x, y, z);
-    size_t i1n = pack(size.x, size.y, size.z, x - 1, y, z);
-    size_t i1p = pack(size.x, size.y, size.z, x + 1, y, z);
-    size_t i2n = pack(size.x, size.y, size.z, x, y - 1, z);
-    size_t i2p = pack(size.x, size.y, size.z, x, y + 1, z);
-    size_t i3n = pack(size.x, size.y, size.z, x, y, z - 1);
-    size_t i3p = pack(size.x, size.y, size.z, x, y, z + 1);
-    glm::vec3 u = src[i];
-    glm::vec3 u1n = src[i1n];
-    glm::vec3 u1p = src[i1p];
-    glm::vec3 u2n = src[i2n];
-    glm::vec3 u2p = src[i2p];
-    glm::vec3 u3n = src[i3n];
-    glm::vec3 u3p = src[i3p];
-
-    dest[i] = src[i] + deltaT * (viscosity / (cellwidth * cellwidth) * (u1n + u1p + u2n + u2p + u3n + u3p - 6.f * u)
-            - 1.f / (2 * cellwidth) * (u1p.x - u1n.x + u2p.y - u2n.y + u3p.z - u3n.z) * u
-                    - glm::vec3(srcP[i1n] - srcP[i1p], srcP[i2n] - srcP[i2p], srcP[i3n] - srcP[i3p]) / (2 * cellwidth));
+__device__ inline float feq(size_t i, float p, const vec3f& v) {
+    float wi = wis[i];
+    float c = cellwidth / deltaT;
+    float dot = offsets[i] * c * v;
+    return wi * p * (1 + (1 / (c * c)) * (3 * (dot) + 9 / (2 * c * c) * dot * dot - 3.f / 2 * (v * v)));
 }
 
-__global__ void updatePSingleIteration(glm::vec3 *srcU, const float *srcP, float *destP, glm::vec<3, int> size) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
-    size_t i = pack(size.x, size.y, size.z, x, y, z);
-    size_t i1n = pack(size.x, size.y, size.z, x - 1, y, z);
-    size_t i1p = pack(size.x, size.y, size.z, x + 1, y, z);
-    size_t i2n = pack(size.x, size.y, size.z, x, y - 1, z);
-    size_t i2p = pack(size.x, size.y, size.z, x, y + 1, z);
-    size_t i3n = pack(size.x, size.y, size.z, x, y, z - 1);
-    size_t i3p = pack(size.x, size.y, size.z, x, y, z + 1);
+__device__ inline void collisionStep(cell_t &cell) {
+    float p = 0;
+    float c = cellwidth / deltaT;
+    vec3f vp {0, 0, 0};
+    for (size_t i = 0; i < Q; i++) {
+        p += cell[i];
+        vp += offsets[i] * c * cell[i];
+    }
+    vec3f v = p == 0 ? vp : vp * (1 / p);
 
-    float ud = (cellwidth / 2.f) * (
-            srcU[i1p].x - srcU[i1n].x
-            + srcU[i2p].y - srcU[i2p].y
-            + srcU[i3p].z - srcU[i3p].z
-    );
-    float oldP = destP[i];
-    float newP = ((cellwidth * cellwidth) / 6.f) * (srcP[i1p] + srcP[i1n] + srcP[i2p] + srcP[i2n] + srcP[i3p] + srcP[i3n] - ud);
-    destP[i] = newP;
-    if ((abs(newP) - abs(oldP)) / (abs(newP) + abs(oldP)) > EPSILON) {
-        if (!changes) {
-            changes = true;
-        }
+    for (size_t i = 0; i < Q; i++) {
+        cell[i] += deltaT / viscosity * (feq(i, p, v) - cell[i]);
     }
 }
 
-__global__ void updateP(glm::vec3 *srcU, float *srcP, glm::vec<3, int> size) {
+__global__ void updateCollision(cell_t *src, vec3<size_t> size) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
     size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
+    if (x >= size.x - 1 || y >= size.y - 1 || z >= size.z - 1) {
+        return;
+    }
     size_t i = pack(size.x, size.y, size.z, x, y, z);
-    size_t i1n = pack(size.x, size.y, size.z, x - 1, y, z);
-    size_t i1p = pack(size.x, size.y, size.z, x + 1, y, z);
-    size_t i2n = pack(size.x, size.y, size.z, x, y - 1, z);
-    size_t i2p = pack(size.x, size.y, size.z, x, y + 1, z);
-    size_t i3n = pack(size.x, size.y, size.z, x, y, z - 1);
-    size_t i3p = pack(size.x, size.y, size.z, x, y, z + 1);
-
-    float ud = (cellwidth / 2.f) * (
-            srcU[i1p].x - srcU[i1n].x
-            + srcU[i2p].y - srcU[i2p].y
-            + srcU[i3p].z - srcU[i3p].z
-    );
-
-    float oldP = INFINITY;
-    float p = srcP[i];
-    do {
-        oldP = p;
-        p = ((cellwidth * cellwidth) / 6.f) * (srcP[i1p] + srcP[i1n] + srcP[i2p] + srcP[i2n] + srcP[i3p] + srcP[i3n] - ud);
-        __syncthreads();
-        srcP[i] = p;
-        __syncthreads();
-    } while((abs(p) - abs(oldP)) / (abs(p) + abs(oldP)) > EPSILON);
+    collisionStep(src[i]);
 }
 
-__global__ void updateUFromP(glm::vec3 *destU, const float *srcP, glm::vec<3, int> size) {
+__global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
     size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
-    size_t i = pack(size.x, size.y, size.z, x, y, z);
-    size_t i1n = pack(size.x, size.y, size.z, x - 1, y, z);
-    size_t i1p = pack(size.x, size.y, size.z, x + 1, y, z);
-    size_t i2n = pack(size.x, size.y, size.z, x, y - 1, z);
-    size_t i2p = pack(size.x, size.y, size.z, x, y + 1, z);
-    size_t i3n = pack(size.x, size.y, size.z, x, y, z - 1);
-    size_t i3p = pack(size.x, size.y, size.z, x, y, z + 1);
+    if (x >= size.x - 1 || y >= size.y - 1 || z >= size.z - 1) {
+        return;
+    }
+    size_t index = pack(size.x, size.y, size.z, x, y, z);
 
-    destU[i] -= glm::vec3(srcP[i1p] - srcP[i1n], srcP[i2p] - srcP[i2n], srcP[i3p] - srcP[i3n]) / (2 * cellwidth);
+    for (int i = 0; i < Q; i++) {
+        size_t sx = x + (int) offsets[i].x;
+        size_t sy = y + (int) offsets[i].y;
+        size_t sz = z + (int) offsets[i].z;
+        dst[index][i] = src[pack(size.x, size.y, size.z, sx, sy, sz)][i];
+    }
 }
 
 __device__ unsigned char floatToChar(float f) {
-    return (unsigned char) min(max((f + 1) * 127.f, 0.f), 255.f);
+    return (unsigned char) min(max((f + 1.f) * 127.f, 0.f), 255.f);
 }
 
-__global__ void renderToBuffer(uchar4 *destImg, glm::vec3 *srcU, glm::vec<3, int> size) {
+__global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
     size_t z = 8;
 
     size_t iP = pack(size.x, size.y, size.z, x, y, z);
     size_t iI = (size.y - y - 1) * size.x + x; // Invert opengl image.
-    glm::vec3 p = srcU[iP];
+    vec3f p{};
+    cell_t cell = srcU[iP];
+    for (int i = 0; i < Q; i++) {
+        p += offsets[i] * cell[i];
+    }
     destImg[iI] = {
             floatToChar(p.x), floatToChar(p.y), floatToChar(p.z), 255
     };
@@ -154,9 +153,7 @@ __global__ void renderToBuffer(uchar4 *destImg, glm::vec3 *srcU, glm::vec<3, int
 }
 
 void render(uchar4 *img, const int width, const int height) {
-    for(int i = 0; i < 2; i++) {
-        simulateStep();
-    }
+    simulateStep();
     dim3 threadsPerBlock(1, 1);
     dim3 numBlocks(SIZE.x, SIZE.y);
     renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, cudau1, SIZE);
@@ -168,44 +165,45 @@ void setTime(float _time) {
 }
 
 void initSimulation() {
-    u1 = new glm::vec3[CELLS];
-    u2 = new glm::vec3[CELLS];
+    u1 = new cell_t[CELLS];
+    u2 = new cell_t[CELLS];
 
-    gpuErrchk(cudaMalloc(&cudau1, sizeof(glm::vec3) * CELLS));
-    gpuErrchk(cudaMalloc(&cudau2, sizeof(glm::vec3) * CELLS));
-
-    p1 = new float[CELLS];
-    p2 = new float[CELLS];
-    gpuErrchk(cudaMalloc(&cudap1, sizeof(float) * CELLS));
-    gpuErrchk(cudaMalloc(&cudap2, sizeof(float) * CELLS));
+    gpuErrchk(cudaMalloc(&cudau1, sizeof(cell_t) * CELLS));
+    gpuErrchk(cudaMalloc(&cudau2, sizeof(cell_t) * CELLS));
 }
 
 void turnOnFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t i = 12; i < 16; i++) {
-        for (size_t z = 0; z < SIZE.z; z++)  {
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(1.f, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(1.f, 0, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, .75f, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, .75f, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(-1.f, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(-1.f, 0, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, .75f, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, .75f, 0);
+    for (size_t x = 0; x < SIZE.x; x++) {
+        for (size_t y = 0; y < SIZE.y; y++) {
+            for (size_t z = 0; z < SIZE.z; z++) {
+                u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = 1.f;
+                u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = 1.f;
+            }
         }
     }
 
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
+    for (size_t i = 0; i < 10; i++) {
+        for (size_t z = 0; z < SIZE.z; z++)  {
+            size_t index = pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z);
+            u1[index][0] = .5f;
+            u1[index][1] = .5f;
+            u2[index][0] = .5f;
+            u2[index][1] = .5f;
+        }
+    }
+
+    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
 }
 
 void turnOffFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t i = 4; i < 16; i++) {
+    /*for (size_t i = 4; i < 16; i++) {
         for (size_t z = 0; z < SIZE.z; z++)  {
             u1[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
@@ -216,10 +214,10 @@ void turnOffFan() {
             u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
             u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
         }
-    }
+    }*/
 
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
 }
 
 void togglePause() {
@@ -246,47 +244,29 @@ void simulateStep() {
             turnOffFan();
         }
     }
-    dim3 threadsPerBlock(1, 1, 1);
-    dim3 numBlocks(SIZE.x - 2, SIZE.y - 2, SIZE.z - 2);
-    updateU<<<numBlocks, threadsPerBlock>>>(cudau1, cudau2, cudap1, SIZE);
+    dim3 threadsPerBlock(8, 8, 8);
+    dim3 numBlocks(
+            (SIZE.x - 2 + threadsPerBlock.x) / threadsPerBlock.x,
+            (SIZE.y - 2 + threadsPerBlock.y) / threadsPerBlock.y,
+            (SIZE.z - 2 + threadsPerBlock.z) / threadsPerBlock.z
+    );
+    updateCollision<<<numBlocks, threadsPerBlock>>>(cudau1, SIZE);
     gpuErrchk(cudaDeviceSynchronize());
-    std::swap(u1, u2);
+    printLayer(1);
+    updateStreaming<<<numBlocks, threadsPerBlock>>>(cudau2, cudau1, SIZE);
     std::swap(cudau1, cudau2);
-    // updateP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
-    int iterations = 0;
-    do {
-        changes = false;
-        updatePSingleIteration<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, cudap2, SIZE);
-        std::swap(cudap1, cudap2);
-        std::swap(p1, p2);
-        cudaDeviceSynchronize();
-        iterations++;
-    } while(changes);
-    if (iterations > 1) {
-        printf("Iterations: %i\n", iterations);
-    }
-    updateUFromP<<<numBlocks, threadsPerBlock>>>(cudau1, cudap1, SIZE);
-    // printLayer(1);
-}
-
-void printP(size_t z) {
-    gpuErrchk(cudaMemcpy(p1, cudap1, sizeof(float) * CELLS, cudaMemcpyDeviceToHost));
-    for (size_t y = 0; y < SIZE.y; y++) {
-        for (size_t x = 0; x < SIZE.x; x++) {
-            printf("%f, ", p1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)]);
-        }
-        printf("\n");
-    }
-    printf("\n");
+    std::swap(u1, u2);
+    gpuErrchk(cudaDeviceSynchronize());
+    printLayer(1);
 }
 
 void printLayer(size_t z) {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t y = 0; y < SIZE.y; y++) {
-        for (size_t x = 0; x < SIZE.x; x++) {
-            glm::vec3 v = u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)];
-            printf("(%f,%f,%f), ", v.x, v.y, v.z);
+    for (size_t y = 0; y < 5u; y++) {
+        for (size_t x = 0; x < 5u; x++) {
+            cell_t v = u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)];
+            printf("(%f,%f,%f), ", v[0], v[1], v[2]);
         }
         printf("\n");
     }
@@ -295,7 +275,7 @@ void printLayer(size_t z) {
 }
 
 void exportFrame() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
+    /*gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
     gpuErrchk(cudaMemcpy(p1, cudap1, sizeof(float) * CELLS, cudaMemcpyDeviceToHost));
 
     std::ofstream out;
@@ -312,11 +292,11 @@ void exportFrame() {
             }
         }
     }
-    out.close();
+    out.close();*/
 }
 
 void importFrame() {
-
+/*
     turnOffFan();
 
     std::ifstream in;
@@ -336,5 +316,6 @@ void importFrame() {
     gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(cudap1, p1, sizeof(float) * CELLS, cudaMemcpyHostToDevice));
     in.close();
+    */
 }
 

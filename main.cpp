@@ -316,6 +316,8 @@ void graphics() {
 
 int main() {
     initSimulation();
+    togglePause();
+    setFan(true);
 
     glfwSetErrorCallback(error_callback);
 
