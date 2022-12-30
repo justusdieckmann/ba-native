@@ -4,6 +4,14 @@
 #include <cmath>
 #include <fstream>
 
+float pi() { return std::atan(1)*4; }
+
+typedef struct {
+    unsigned int mantissa : 23;
+    unsigned int exponent : 8;
+    unsigned int sign : 1;
+} floatparts;
+
 const size_t Q = 19;
 typedef array<float, Q> cell_t;
 typedef vec3<float> vec3f;
@@ -12,10 +20,10 @@ const vec3<size_t> SIZE {100, 100, 16};
 
 const size_t CELLS = SIZE.x * SIZE.y * SIZE.z;
 
-__managed__ float deltaT = 0.01f;
+__managed__ float deltaT = 0.001f;
 
-__managed__ float viscosity = 0.1;
-__managed__ float cellwidth = 0.01;
+__managed__ float tau = 0.0007;
+__managed__ float cellwidth = .01f;
 
 __managed__ bool changes = false;
 
@@ -27,25 +35,31 @@ bool pause = false;
 __managed__ float currentTime;
 
 __constant__ const array<vec3f, Q> offsets {
-        0, 0, 0,
-        -1, 0, 0,
-        1, 0, 0,
-        0, -1, 0,
-        0, 1, 0,
-        0, 0, -1,
-        0, 0, 1,
-        -1, -1, 0,
-        -1, 1, 0,
-        1, -1, 0,
-        1, 1, 0,
-        -1, 0, -1,
-        -1, 0, 1,
-        1, 0, -1,
-        1, 0, 1,
-        0, -1, -1,
-        0, -1, 1,
-        0, 1, -1,
-        0, 1, 1,
+        0, 0, 0,   // 0
+        -1, 0, 0,  // 1
+        1, 0, 0,   // 2
+        0, -1, 0,  // 3
+        0, 1, 0,   // 4
+        0, 0, -1,  // 5
+        0, 0, 1,   // 6
+        -1, -1, 0, // 7
+        -1, 1, 0,  // 8
+        1, -1, 0,  // 9
+        1, 1, 0,   // 10
+        -1, 0, -1, // 11
+        -1, 0, 1,  // 12
+        1, 0, -1,  // 13
+        1, 0, 1,   // 14
+        0, -1, -1, // 15
+        0, -1, 1,  // 16
+        0, 1, -1,  // 17
+        0, 1, 1,   // 18
+};
+
+__constant__ const array<unsigned char, Q> opposite = {
+        0,
+        2, 1, 4, 3, 6, 5,
+        10, 9, 8, 7, 14, 13, 12, 11, 18, 17, 16, 15
 };
 
 __constant__ const array<float, Q> wis {
@@ -76,20 +90,33 @@ cell_t *u2;
 cell_t *cudau1;
 cell_t *cudau2;
 
+__device__ __host__ int posmod(int a, int b) {
+    return (a + b) % b;
+}
+
 __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, size_t y, size_t z) {
     return (z * h + y) * w + x;
 }
 
-__device__ inline float feq(size_t i, float p, const vec3f& v) {
+__device__ __host__ inline float feq(size_t i, float p, const vec3f& v) {
     float wi = wis[i];
-    float c = cellwidth / deltaT;
+    float c = cellwidth;
     float dot = offsets[i] * c * v;
-    return wi * p * (1 + (1 / (c * c)) * (3 * (dot) + 9 / (2 * c * c) * dot * dot - 3.f / 2 * (v * v)));
+    return wi * p * (1 + (1 / (c * c)) * (3 * dot + (9 / (2 * c * c)) * dot * dot - (3.f / 2) * (v * v)));
 }
 
 __device__ inline void collisionStep(cell_t &cell) {
     float p = 0;
-    float c = cellwidth / deltaT;
+    float c = cellwidth;
+    floatparts* parts = (floatparts*) &cell[0];
+    if (parts->exponent == 255) {
+        if ((parts->mantissa & 1) != 0) {
+            for (size_t i = 1; i < Q; i++) {
+                cell[i] = cell[opposite[i]];
+            }
+        }
+        return;
+    }
     vec3f vp {0, 0, 0};
     for (size_t i = 0; i < Q; i++) {
         p += cell[i];
@@ -98,15 +125,15 @@ __device__ inline void collisionStep(cell_t &cell) {
     vec3f v = p == 0 ? vp : vp * (1 / p);
 
     for (size_t i = 0; i < Q; i++) {
-        cell[i] += deltaT / viscosity * (feq(i, p, v) - cell[i]);
+        cell[i] = cell[i] + deltaT / tau * (feq(i, p, v) - cell[i]);
     }
 }
 
 __global__ void updateCollision(cell_t *src, vec3<size_t> size) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
-    if (x >= size.x - 1 || y >= size.y - 1 || z >= size.z - 1) {
+    size_t x = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t y = blockIdx.y * blockDim.y + threadIdx.y;
+    size_t z = blockIdx.z * blockDim.z + threadIdx.z;
+    if (x >= size.x || y >= size.y || z >= size.z) {
         return;
     }
     size_t i = pack(size.x, size.y, size.z, x, y, z);
@@ -114,24 +141,33 @@ __global__ void updateCollision(cell_t *src, vec3<size_t> size) {
 }
 
 __global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x + 1; // Not calculating border cells.
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + 1;
-    if (x >= size.x - 1 || y >= size.y - 1 || z >= size.z - 1) {
+    size_t x = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t y = blockIdx.y * blockDim.y + threadIdx.y;
+    size_t z = blockIdx.z * blockDim.z + threadIdx.z;
+    if (x >= size.x || y >= size.y || z >= size.z) {
         return;
     }
     size_t index = pack(size.x, size.y, size.z, x, y, z);
 
-    for (int i = 0; i < Q; i++) {
-        size_t sx = x + (int) offsets[i].x;
-        size_t sy = y + (int) offsets[i].y;
-        size_t sz = z + (int) offsets[i].z;
+    floatparts* parts = (floatparts*) &src[index][0];
+
+    if (parts->exponent == 255) {
+        return;
+    }
+
+    for (int i = 1; i < Q; i++) {
+        int sx = x + (int) offsets[i].x;
+        int sy = y + (int) offsets[i].y;
+        int sz = z + (int) offsets[i].z;
+        if (sx < 0 || sy < 0 || sz < 0 || sx >= size.x || sy >= size.y || sz >= size.z) {
+            continue;
+        }
         dst[index][i] = src[pack(size.x, size.y, size.z, sx, sy, sz)][i];
     }
 }
 
 __device__ unsigned char floatToChar(float f) {
-    return (unsigned char) min(max((f + 1.f) * 127.f, 0.f), 255.f);
+    return (unsigned char) min(max((f * 100.f + 1.f) * 127.f, 0.f), 255.f);
 }
 
 __global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size) {
@@ -176,16 +212,41 @@ void turnOnFan() {
     gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
     gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
 
-    for (size_t x = 0; x < SIZE.x; x++) {
-        for (size_t y = 0; y < SIZE.y; y++) {
-            for (size_t z = 0; z < SIZE.z; z++) {
-                u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = 1.f;
-                u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = 1.f;
+    int half = SIZE.x / 2;
+
+    for (int x = 0; x < SIZE.x; x++) {
+        for (int y = 0; y < SIZE.y; y++) {
+            for (int z = 0; z < SIZE.z; z++) {
+                float fx = ((int) x - half) / (float) SIZE.x * 2;
+                float fy = ((int) y - half) / (float) SIZE.y * 2;
+                float angle = atan2(fx, fy) + pi() / 2;
+                float d = std::sqrt(fx * fx + fy * fy);
+                float strength = std::max(d * (1 - std::pow(10000.f, d - 1)) * 1.f, 0.f);
+                vec3f direction = {0, 0, 0};
+
+                for (int i = 0; i < Q; i++) {
+                    float f = feq(i, 0.1f, {.001f, 0, 0});
+                    u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][i] = f;
+                    u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][i] = f;
+                }
+
+                if (x <= 1 || y <= 1 || z <= 1 || x >= SIZE.x - 2 || y >= SIZE.y - 2 || z >= SIZE.y - 2 ||  //x == 20 && (y >= 40 && y <= 48 || y >= 52 && y <= 60) || x == 23 && y == 51) {
+                    std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
+                    floatparts* parts = (floatparts*) &u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0];
+                    parts->sign = 0;
+                    parts->exponent = 255;
+                    if (x <= 1 || x >= SIZE.x - 2 || y <= 1 || y >= SIZE.y - 2) {
+                        parts->mantissa = 1 << 22 | 0b10;
+                    } else {
+                        parts->mantissa = 1 << 22 | 0b01;
+                    }
+                    u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0];
+                }
             }
         }
     }
 
-    for (size_t i = 0; i < 10; i++) {
+    /*for (size_t i = 0; i < 10; i++) {
         for (size_t z = 0; z < SIZE.z; z++)  {
             size_t index = pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z);
             u1[index][0] = .5f;
@@ -193,10 +254,12 @@ void turnOnFan() {
             u2[index][0] = .5f;
             u2[index][1] = .5f;
         }
-    }
+    }*/
 
     gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
+
+    printLayer(8);
 }
 
 void turnOffFan() {
@@ -251,13 +314,13 @@ void simulateStep() {
             (SIZE.z - 2 + threadsPerBlock.z) / threadsPerBlock.z
     );
     updateCollision<<<numBlocks, threadsPerBlock>>>(cudau1, SIZE);
-    gpuErrchk(cudaDeviceSynchronize());
-    printLayer(1);
+    // gpuErrchk(cudaDeviceSynchronize());
+    printLayer(8);
     updateStreaming<<<numBlocks, threadsPerBlock>>>(cudau2, cudau1, SIZE);
     std::swap(cudau1, cudau2);
     std::swap(u1, u2);
     gpuErrchk(cudaDeviceSynchronize());
-    printLayer(1);
+    printLayer(8);
 }
 
 void printLayer(size_t z) {
