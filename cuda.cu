@@ -16,9 +16,9 @@ const size_t Q = 19;
 typedef array<float, Q> cell_t;
 typedef vec3<float> vec3f;
 
-const vec3<size_t> SIZE {100, 100, 16};
+vec3<size_t> size;
 
-const size_t CELLS = SIZE.x * SIZE.y * SIZE.z;
+size_t cells;
 
 __managed__ float deltaT = 0.001f;
 
@@ -89,10 +89,6 @@ cell_t *u2;
 
 cell_t *cudau1;
 cell_t *cudau2;
-
-__device__ __host__ int posmod(int a, int b) {
-    return (a + b) % b;
-}
 
 __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, size_t y, size_t z) {
     return (z * h + y) * w + x;
@@ -191,8 +187,8 @@ __global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size)
 void render(uchar4 *img, const int width, const int height) {
     simulateStep();
     dim3 threadsPerBlock(1, 1);
-    dim3 numBlocks(SIZE.x, SIZE.y);
-    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, cudau1, SIZE);
+    dim3 numBlocks(size.x, size.y);
+    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, cudau1, size);
     cudaDeviceSynchronize();
 }
 
@@ -200,71 +196,54 @@ void setTime(float _time) {
     currentTime = _time;
 }
 
-void initSimulation() {
-    u1 = new cell_t[CELLS];
-    u2 = new cell_t[CELLS];
+void initSimulation(size_t x, size_t y, size_t z) {
+    size = {x, y, z};
+    cells = x * y * z;
 
-    gpuErrchk(cudaMalloc(&cudau1, sizeof(cell_t) * CELLS));
-    gpuErrchk(cudaMalloc(&cudau2, sizeof(cell_t) * CELLS));
-}
+    u1 = new cell_t[cells];
+    u2 = new cell_t[cells];
 
-void turnOnFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMalloc(&cudau1, sizeof(cell_t) * cells));
+    gpuErrchk(cudaMalloc(&cudau2, sizeof(cell_t) * cells));
 
-    int half = SIZE.x / 2;
-
-    for (int x = 0; x < SIZE.x; x++) {
-        for (int y = 0; y < SIZE.y; y++) {
-            for (int z = 0; z < SIZE.z; z++) {
-                float fx = ((int) x - half) / (float) SIZE.x * 2;
-                float fy = ((int) y - half) / (float) SIZE.y * 2;
-                float angle = atan2(fx, fy) + pi() / 2;
-                float d = std::sqrt(fx * fx + fy * fy);
-                float strength = std::max(d * (1 - std::pow(10000.f, d - 1)) * 1.f, 0.f);
-                vec3f direction = {0, 0, 0};
-
+    for (int x = 0; x < size.x; x++) {
+        for (int y = 0; y < size.y; y++) {
+            for (int z = 0; z < size.z; z++) {
                 for (int i = 0; i < Q; i++) {
                     float f = feq(i, 0.1f, {.001f, 0, 0});
-                    u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][i] = f;
-                    u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][i] = f;
+                    u1[pack(size.x, size.y, size.z, x, y, z)][i] = f;
+                    u2[pack(size.x, size.y, size.z, x, y, z)][i] = f;
                 }
 
-                if (x <= 1 || y <= 1 || z <= 1 || x >= SIZE.x - 2 || y >= SIZE.y - 2 || z >= SIZE.y - 2 ||  //x == 20 && (y >= 40 && y <= 48 || y >= 52 && y <= 60) || x == 23 && y == 51) {
+                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.y - 2 ||  //x == 20 && (y >= 40 && y <= 48 || y >= 52 && y <= 60) || x == 23 && y == 51) {
                     std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
-                    floatparts* parts = (floatparts*) &u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0];
+                    auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
                     parts->sign = 0;
                     parts->exponent = 255;
-                    if (x <= 1 || x >= SIZE.x - 2 || y <= 1 || y >= SIZE.y - 2) {
+                    if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2) {
                         parts->mantissa = 1 << 22 | 0b10;
                     } else {
                         parts->mantissa = 1 << 22 | 0b01;
                     }
-                    u2[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0] = u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)][0];
+                    u2[pack(size.x, size.y, size.z, x, y, z)][0] = u1[pack(size.x, size.y, size.z, x, y, z)][0];
                 }
             }
         }
     }
 
-    /*for (size_t i = 0; i < 10; i++) {
-        for (size_t z = 0; z < SIZE.z; z++)  {
-            size_t index = pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z);
-            u1[index][0] = .5f;
-            u1[index][1] = .5f;
-            u2[index][0] = .5f;
-            u2[index][1] = .5f;
-        }
-    }*/
+    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
+}
 
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
-
-    printLayer(8);
+void turnOnFan() {
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
+    // printLayer(8);
 }
 
 void turnOffFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
 
     /*for (size_t i = 4; i < 16; i++) {
         for (size_t z = 0; z < SIZE.z; z++)  {
@@ -279,8 +258,8 @@ void turnOffFan() {
         }
     }*/
 
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * CELLS, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
 }
 
 void togglePause() {
@@ -309,26 +288,26 @@ void simulateStep() {
     }
     dim3 threadsPerBlock(8, 8, 8);
     dim3 numBlocks(
-            (SIZE.x - 2 + threadsPerBlock.x) / threadsPerBlock.x,
-            (SIZE.y - 2 + threadsPerBlock.y) / threadsPerBlock.y,
-            (SIZE.z - 2 + threadsPerBlock.z) / threadsPerBlock.z
+            (size.x + threadsPerBlock.x) / threadsPerBlock.x,
+            (size.y + threadsPerBlock.y) / threadsPerBlock.y,
+            (size.z + threadsPerBlock.z) / threadsPerBlock.z
     );
-    updateCollision<<<numBlocks, threadsPerBlock>>>(cudau1, SIZE);
+    updateCollision<<<numBlocks, threadsPerBlock>>>(cudau1, size);
     // gpuErrchk(cudaDeviceSynchronize());
-    printLayer(8);
-    updateStreaming<<<numBlocks, threadsPerBlock>>>(cudau2, cudau1, SIZE);
+    // printLayer(8);
+    updateStreaming<<<numBlocks, threadsPerBlock>>>(cudau2, cudau1, size);
     std::swap(cudau1, cudau2);
     std::swap(u1, u2);
     gpuErrchk(cudaDeviceSynchronize());
-    printLayer(8);
+    // printLayer(8);
 }
 
 void printLayer(size_t z) {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * CELLS, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
 
     for (size_t y = 0; y < 5u; y++) {
         for (size_t x = 0; x < 5u; x++) {
-            cell_t v = u1[pack(SIZE.x, SIZE.y, SIZE.z, x, y, z)];
+            cell_t v = u1[pack(size.x, size.y, size.z, x, y, z)];
             printf("(%f,%f,%f), ", v[0], v[1], v[2]);
         }
         printf("\n");

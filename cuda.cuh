@@ -5,13 +5,11 @@
 #include <iostream>
 #include "vec3.h"
 
-extern const vec3<size_t> SIZE;
-
 void render(uchar4* img, int width, int height);
 
 void setTime(float _time);
 
-void initSimulation();
+void initSimulation(size_t x, size_t y, size_t z);
 
 void printLayer(size_t z);
 

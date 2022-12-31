@@ -13,6 +13,8 @@
 #include "Timer.h"
 #include "cuda.cuh"
 
+vec3<int> mysize = {100, 100, 16};
+
 void reshapeFunc(int w, int h);
 
 static void checkCudaError(cudaError_t errorCode) {
@@ -256,7 +258,7 @@ void graphics() {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
-    reshapeFunc(SIZE.x, SIZE.y);
+    reshapeFunc(mysize.x, mysize.y);
 
     redo_graphics_mutex.lock();
 
@@ -291,7 +293,7 @@ void graphics() {
 
         glBindTexture(GL_TEXTURE_2D, gl_Tex);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, gl_PBO);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SIZE.x, SIZE.y, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, mysize.x, mysize.y, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glBindTexture(GL_TEXTURE_2D, gl_Tex);
         glUniform1i(loc_texture, 0);
 
@@ -315,9 +317,8 @@ void graphics() {
 }
 
 int main() {
-    initSimulation();
+    initSimulation(mysize.x, mysize.y, mysize.z);
     togglePause();
-    setFan(true);
 
     glfwSetErrorCallback(error_callback);
 

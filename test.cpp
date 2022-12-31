@@ -1,34 +1,38 @@
 #include <cstdio>
 #include <cstdlib>
-#include <mutex>
-#include <thread>
 #include <vector>
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
 #include <iostream>
-
-#include <cuda_runtime.h>
-#include <cuda_gl_interop.h>
 
 #include "Timer.h"
 #include "cuda.cuh"
-
-static void checkCudaError(cudaError_t errorCode) {
-    if (errorCode != cudaSuccess) {
-        fprintf(stderr, "CudaError: %s\n", cudaGetErrorString(errorCode));
-    }
-}
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
 }
 
-int main() {
-    initSimulation();
+int main(int argc, const char** argv) {
+    vec3<int> size {200, 200, 200};
 
-    importFrame();
+    if (argc > 1) {
+        if (argc != 4) {
+            std::cerr << "usage: ./test <xdim> <ydim> <zdim>" << std::endl;
+            std::exit(-1);
+        }
 
-    // simulateStep();
+        size.x = std::atoi(argv[1]);
+        size.y = std::atoi(argv[2]);
+        size.z = std::atoi(argv[3]);
+    }
 
-    printLayer(1);
+    initSimulation(size.x, size.y, size.z);
+
+    Timer t = Timer();
+
+    t.start();
+
+    for (int i = 0; i < 10; i++) {
+        simulateStep();
+        std::cout << t.round() << std::endl;
+    }
+
 }
