@@ -33,7 +33,7 @@ bool getFan();
 
 void printP(size_t z);
 
-void exportFrame();
+void exportFrame(const std::string& filename);
 
 void importFrame();
 

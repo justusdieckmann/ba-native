@@ -28,11 +28,15 @@ int main(int argc, const char** argv) {
 
     Timer t = Timer();
 
+    exportFrame("0.bin");
+
     t.start();
 
     for (int i = 0; i < 10; i++) {
         simulateStep();
         std::cout << t.round() << std::endl;
     }
+
+    exportFrame("10.bin");
 
 }

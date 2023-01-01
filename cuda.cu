@@ -316,25 +316,13 @@ void printLayer(size_t z) {
 
 }
 
-void exportFrame() {
-    /*gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(glm::vec3) * CELLS, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(p1, cudap1, sizeof(float) * CELLS, cudaMemcpyDeviceToHost));
+void exportFrame(const std::string& filename) {
+    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
 
     std::ofstream out;
-    out.open( "bin.dat", std::ios::out | std::ios::binary);
-
-    for (int x = 1; x < SIZE.x - 1; x++) {
-        for (int y = 1; y < SIZE.y - 1; y++) {
-            for (int z = 1; z < SIZE.z - 1; z++) {
-                int i = pack(SIZE.x, SIZE.y, SIZE.z, x, y, z);
-                out.write(reinterpret_cast<const char *>(&u1[i].x), sizeof(float));
-                out.write(reinterpret_cast<const char *>(&u1[i].y), sizeof(float));
-                out.write(reinterpret_cast<const char *>(&u1[i].z), sizeof(float));
-                out.write(reinterpret_cast<const char *>(&p1[i]), sizeof(float));
-            }
-        }
-    }
-    out.close();*/
+    out.open(filename, std::ios::out | std::ios::binary);
+    out.write(reinterpret_cast<const char *>(u1), sizeof(cell_t) * cells);
+    out.close();
 }
 
 void importFrame() {
