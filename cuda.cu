@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cmath>
 #include <fstream>
+#include <vector>
 
 float pi() { return std::atan(1)*4; }
 
@@ -16,9 +17,25 @@ const size_t Q = 19;
 typedef array<float, Q> cell_t;
 typedef vec3<float> vec3f;
 
+struct gpu_t {
+    int device;
+    size_t mainGlobalIndex;
+    size_t mainLayers;
+    cell_t *data1;
+    cell_t *data2;
+    size_t mainOffset;
+    size_t bottomPaddingOffset;
+};
+
 vec3<size_t> size;
 
 size_t cells;
+size_t bytesPerLayer;
+size_t elementsPerLayer;
+
+std::vector<gpu_t> gpuStructs;
+
+cudaStream_t *streams;
 
 __managed__ float deltaT = 0.001f;
 
@@ -87,9 +104,6 @@ __constant__ const array<float, Q> wis {
 cell_t *u1;
 cell_t *u2;
 
-cell_t *cudau1;
-cell_t *cudau2;
-
 __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, size_t y, size_t z) {
     return (z * h + y) * w + x;
 }
@@ -125,22 +139,22 @@ __device__ inline void collisionStep(cell_t &cell) {
     }
 }
 
-__global__ void updateCollision(cell_t *src, vec3<size_t> size) {
+__global__ void updateCollision(cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x;
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z;
-    if (x >= size.x || y >= size.y || z >= size.z) {
+    size_t z = blockIdx.z * blockDim.z + threadIdx.z + zoffset;
+    if (x >= size.x || y >= size.y || z >= zsize + zoffset) {
         return;
     }
     size_t i = pack(size.x, size.y, size.z, x, y, z);
     collisionStep(src[i]);
 }
 
-__global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size) {
+__global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x;
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z;
-    if (x >= size.x || y >= size.y || z >= size.z) {
+    size_t z = blockIdx.z * blockDim.z + threadIdx.z + zoffset;
+    if (x >= size.x || y >= size.y || z >= zsize + zoffset) {
         return;
     }
     size_t index = pack(size.x, size.y, size.z, x, y, z);
@@ -166,6 +180,12 @@ __device__ unsigned char floatToChar(float f) {
     return (unsigned char) min(max((f * 100.f + 1.f) * 127.f, 0.f), 255.f);
 }
 
+void syncStreams() {
+    for (auto gpu : gpuStructs) {
+        gpuErrchk(cudaStreamSynchronize(streams[gpu.device]));
+    }
+}
+
 __global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -188,7 +208,7 @@ void render(uchar4 *img, const int width, const int height) {
     simulateStep();
     dim3 threadsPerBlock(1, 1);
     dim3 numBlocks(size.x, size.y);
-    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, cudau1, size);
+    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, gpuStructs[0].data1, size);
     cudaDeviceSynchronize();
 }
 
@@ -196,15 +216,42 @@ void setTime(float _time) {
     currentTime = _time;
 }
 
-void initSimulation(size_t x, size_t y, size_t z) {
-    size = {x, y, z};
-    cells = x * y * z;
+void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
+    size = {xdim, ydim, zdim};
+    cells = xdim * ydim * zdim;
+
+    size_t layersPerGpu = zdim / gpus;
+    size_t remainder = zdim - layersPerGpu * gpus;
+    elementsPerLayer = xdim * ydim;
+    bytesPerLayer = elementsPerLayer * sizeof(cell_t);
 
     u1 = new cell_t[cells];
     u2 = new cell_t[cells];
 
-    gpuErrchk(cudaMalloc(&cudau1, sizeof(cell_t) * cells));
-    gpuErrchk(cudaMalloc(&cudau2, sizeof(cell_t) * cells));
+    streams = new cudaStream_t[gpus];
+
+    size_t currentLayer = 0;
+    gpuStructs = std::vector<gpu_t>();
+    gpuStructs.reserve(gpus);
+
+    for (int i = 0; i < gpus; i++) {
+        gpuErrchk(cudaSetDevice(i));
+        gpuErrchk(cudaStreamCreate(&streams[i]));
+        gpu_t gpu{};
+        gpu.device = i;
+        int toppaddinglayers = i > 0 ? 1 : 0;
+        int bottompaddinglayers = i < gpus - 1 ? 1 : 0;
+        gpu.mainGlobalIndex = currentLayer * elementsPerLayer;
+        gpu.mainLayers = layersPerGpu + (i < remainder ? 1 : 0);
+        gpu.mainOffset = toppaddinglayers * elementsPerLayer;
+        gpu.bottomPaddingOffset = gpu.mainOffset + gpu.mainLayers * elementsPerLayer;
+
+        currentLayer += gpu.mainLayers;
+
+        gpuErrchk(cudaMalloc(&gpu.data1, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * bytesPerLayer));
+        gpuErrchk(cudaMalloc(&gpu.data2, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * bytesPerLayer));
+        gpuStructs.push_back(gpu);
+    }
 
     for (int x = 0; x < size.x; x++) {
         for (int y = 0; y < size.y; y++) {
@@ -215,7 +262,7 @@ void initSimulation(size_t x, size_t y, size_t z) {
                     u2[pack(size.x, size.y, size.z, x, y, z)][i] = f;
                 }
 
-                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.y - 2 ||  //x == 20 && (y >= 40 && y <= 48 || y >= 52 && y <= 60) || x == 23 && y == 51) {
+                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.y - 2 ||  //xdim == 20 && (ydim >= 40 && ydim <= 48 || ydim >= 52 && ydim <= 60) || xdim == 23 && ydim == 51) {
                     std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
                     auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
                     parts->sign = 0;
@@ -231,35 +278,11 @@ void initSimulation(size_t x, size_t y, size_t z) {
         }
     }
 
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
-}
-
-void turnOnFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-    // printLayer(8);
-}
-
-void turnOffFan() {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(u2, cudau2, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-
-    /*for (size_t i = 4; i < 16; i++) {
-        for (size_t z = 0; z < SIZE.z; z++)  {
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, 0, i, z)] = glm::vec3(0, 0, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, i, 0, z)] = glm::vec3(0, 0, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(0, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - 1, i, z)] = glm::vec3(0, 0, 0);
-            u1[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
-            u2[pack(SIZE.x, SIZE.y, SIZE.z, SIZE.x - i, 0, z)] = glm::vec3(0, 0, 0);
-        }
-    }*/
-
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudau2, u2, sizeof(cell_t) * cells, cudaMemcpyHostToDevice));
+    for (auto gpu : gpuStructs) {
+        gpuErrchk(cudaMemcpyAsync(&gpu.data1[gpu.mainOffset], &u1[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
+        gpuErrchk(cudaMemcpyAsync(&gpu.data2[gpu.mainOffset], &u2[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
+    }
+    syncStreams();
 }
 
 void togglePause() {
@@ -278,32 +301,43 @@ void simulateStep() {
     if (pause) {
         return;
     }
-    if (desiredFanStatus != fanStatus) {
-        fanStatus = desiredFanStatus;
-        if (fanStatus) {
-            turnOnFan();
-        } else {
-            turnOffFan();
-        }
+
+    for (int i = 1; i < gpuStructs.size(); i++) {
+        // Copy bottom padding for i - 1
+        gpuErrchk(cudaMemcpyAsync(
+                &gpuStructs[i - 1].data1[gpuStructs[i - 1].bottomPaddingOffset],
+                &gpuStructs[i].data1[gpuStructs[i].mainOffset],
+                bytesPerLayer, cudaMemcpyDefault, streams[i - 1]
+        ));
+        // Copy top padding for i
+        gpuErrchk(cudaMemcpyAsync(
+                gpuStructs[i].data1,
+                &gpuStructs[i - 1].data1[gpuStructs[i - 1].bottomPaddingOffset - elementsPerLayer],
+                bytesPerLayer, cudaMemcpyDefault, streams[i]
+        ));
     }
-    dim3 threadsPerBlock(8, 8, 8);
-    dim3 numBlocks(
-            (size.x + threadsPerBlock.x) / threadsPerBlock.x,
-            (size.y + threadsPerBlock.y) / threadsPerBlock.y,
-            (size.z + threadsPerBlock.z) / threadsPerBlock.z
-    );
-    updateCollision<<<numBlocks, threadsPerBlock>>>(cudau1, size);
-    // gpuErrchk(cudaDeviceSynchronize());
-    // printLayer(8);
-    updateStreaming<<<numBlocks, threadsPerBlock>>>(cudau2, cudau1, size);
-    std::swap(cudau1, cudau2);
+
+    syncStreams();
+
+    for (auto gpu : gpuStructs) {
+        cudaSetDevice(gpu.device);
+        dim3 threadsPerBlock(8, 8, 8);
+        dim3 numBlocks(
+                (size.x + threadsPerBlock.x) / threadsPerBlock.x,
+                (size.y + threadsPerBlock.y) / threadsPerBlock.y,
+                (gpu.mainLayers + threadsPerBlock.z) / threadsPerBlock.z
+        );
+        updateCollision<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
+        updateStreaming<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data2, gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
+        // data1 is always pointing to up-to-date buffer.
+        std::swap(gpu.data1, gpu.data2);
+    }
     std::swap(u1, u2);
-    gpuErrchk(cudaDeviceSynchronize());
-    // printLayer(8);
+    syncStreams();
 }
 
 void printLayer(size_t z) {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(u1, gpuStructs[0].data1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
 
     for (size_t y = 0; y < 5u; y++) {
         for (size_t x = 0; x < 5u; x++) {
@@ -317,11 +351,14 @@ void printLayer(size_t z) {
 }
 
 void exportFrame(const std::string& filename) {
-    gpuErrchk(cudaMemcpy(u1, cudau1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-
     std::ofstream out;
     out.open(filename, std::ios::out | std::ios::binary);
-    out.write(reinterpret_cast<const char *>(u1), sizeof(cell_t) * cells);
+
+    for (auto gpu : gpuStructs) {
+        gpuErrchk(cudaMemcpy(&u1[gpu.mainGlobalIndex], &gpu.data1[gpu.mainOffset], gpu.mainLayers * bytesPerLayer, cudaMemcpyDeviceToHost));
+        out.write(reinterpret_cast<const char *>(&u1[gpu.mainGlobalIndex]), gpu.mainLayers * bytesPerLayer);
+    }
+
     out.close();
 }
 

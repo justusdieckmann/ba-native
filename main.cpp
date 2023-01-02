@@ -13,7 +13,7 @@
 #include "Timer.h"
 #include "cuda.cuh"
 
-vec3<int> mysize = {100, 100, 16};
+vec3<int> mysize = {200, 200, 100};
 
 void reshapeFunc(int w, int h);
 
@@ -42,7 +42,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             togglePause();
             break;
         case GLFW_KEY_E:
-            exportFrame();
+            exportFrame("scenario.dat");
             break;
         case GLFW_KEY_I:
             importFrame();
@@ -317,7 +317,7 @@ void graphics() {
 }
 
 int main() {
-    initSimulation(mysize.x, mysize.y, mysize.z);
+    initSimulation(mysize.x, mysize.y, mysize.z, 1);
     togglePause();
 
     glfwSetErrorCallback(error_callback);

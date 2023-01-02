@@ -9,7 +9,7 @@ void render(uchar4* img, int width, int height);
 
 void setTime(float _time);
 
-void initSimulation(size_t x, size_t y, size_t z);
+void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus);
 
 void printLayer(size_t z);
 
