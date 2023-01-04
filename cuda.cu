@@ -5,7 +5,8 @@
 #include <fstream>
 #include <vector>
 
-float pi() { return std::atan(1)*4; }
+const int FLAG_OBSTACLE = 1 << 1;
+const int FLAG_KEEP_VELOCITY = 1 << 2;
 
 typedef struct {
     unsigned int mantissa : 23;
@@ -39,17 +40,12 @@ cudaStream_t *streams;
 
 __managed__ float deltaT = 0.001f;
 
-__managed__ float tau = 0.0007;
+__managed__ float tau = 0.00065;
 __managed__ float cellwidth = .01f;
 
-__managed__ bool changes = false;
-
-bool fanStatus = false;
 bool desiredFanStatus = false;
 
 bool pause = false;
-
-__managed__ float currentTime;
 
 __constant__ const array<vec3f, Q> offsets {
         0, 0, 0,   // 0
@@ -120,9 +116,10 @@ __device__ inline void collisionStep(cell_t &cell) {
     float c = cellwidth;
     floatparts* parts = (floatparts*) &cell[0];
     if (parts->exponent == 255) {
-        if ((parts->mantissa & 1) != 0) {
+        if (parts->mantissa & FLAG_OBSTACLE) {
+            cell_t cell2 = cell;
             for (size_t i = 1; i < Q; i++) {
-                cell[i] = cell[opposite[i]];
+                cell[i] = cell2[opposite[i]];
             }
         }
         return;
@@ -162,10 +159,13 @@ __global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size, siz
     floatparts* parts = (floatparts*) &src[index][0];
 
     if (parts->exponent == 255) {
-        return;
+        if (parts->mantissa & FLAG_KEEP_VELOCITY) {
+            dst[index] = src[index];
+            return;
+        }
     }
 
-    for (int i = 1; i < Q; i++) {
+    for (int i = 0; i < Q; i++) {
         int sx = x + (int) offsets[i].x;
         int sy = y + (int) offsets[i].y;
         int sz = z + (int) offsets[i].z;
@@ -177,7 +177,7 @@ __global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size, siz
 }
 
 __device__ unsigned char floatToChar(float f) {
-    return (unsigned char) min(max((f * 100.f + 1.f) * 127.f, 0.f), 255.f);
+    return (unsigned char) min(max((f * 200.f + 1.f) * 127.f, 0.f), 255.f);
 }
 
 void syncStreams() {
@@ -210,10 +210,6 @@ void render(uchar4 *img, const int width, const int height) {
     dim3 numBlocks(size.x, size.y);
     renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, gpuStructs[0].data1, size);
     cudaDeviceSynchronize();
-}
-
-void setTime(float _time) {
-    currentTime = _time;
 }
 
 void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
@@ -262,15 +258,15 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
                     u2[pack(size.x, size.y, size.z, x, y, z)][i] = f;
                 }
 
-                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.y - 2 ||  //xdim == 20 && (ydim >= 40 && ydim <= 48 || ydim >= 52 && ydim <= 60) || xdim == 23 && ydim == 51) {
+                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.z - 2 || // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
                     std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
                     auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
                     parts->sign = 0;
                     parts->exponent = 255;
-                    if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2) {
-                        parts->mantissa = 1 << 22 | 0b10;
+                    if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2 || z <= 1 || z >= size.z - 2) {
+                        parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
                     } else {
-                        parts->mantissa = 1 << 22 | 0b01;
+                        parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
                     }
                     u2[pack(size.x, size.y, size.z, x, y, z)][0] = u1[pack(size.x, size.y, size.z, x, y, z)][0];
                 }
@@ -297,6 +293,14 @@ bool getFan() {
     return desiredFanStatus;
 }
 
+void updateHost() {
+    for (auto gpu : gpuStructs) {
+        gpuErrchk(cudaMemcpy(&u1[gpu.mainGlobalIndex], &gpu.data1[gpu.mainOffset], gpu.mainLayers * bytesPerLayer,
+                             cudaMemcpyDeviceToHost));
+    }
+}
+
+
 void simulateStep() {
     if (pause) {
         return;
@@ -319,7 +323,7 @@ void simulateStep() {
 
     syncStreams();
 
-    for (auto gpu : gpuStructs) {
+    for (auto &gpu : gpuStructs) {
         cudaSetDevice(gpu.device);
         dim3 threadsPerBlock(8, 8, 8);
         dim3 numBlocks(
@@ -329,6 +333,7 @@ void simulateStep() {
         );
         updateCollision<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
         updateStreaming<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data2, gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
+
         // data1 is always pointing to up-to-date buffer.
         std::swap(gpu.data1, gpu.data2);
     }

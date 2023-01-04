@@ -1,6 +1,5 @@
 #include <cstdio>
 #include <cstdlib>
-#include <vector>
 #include <iostream>
 
 #include "Timer.h"
@@ -39,13 +38,13 @@ int main(int argc, const char** argv) {
 
     t.start();
 
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 1; i++) {
         simulateStep();
         std::cout << t.round() << std::endl;
     }
 
     if (doExport) {
-        exportFrame("10.bin");
+        exportFrame("export.bin");
     }
 
 }

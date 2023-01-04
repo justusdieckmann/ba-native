@@ -13,7 +13,7 @@
 #include "Timer.h"
 #include "cuda.cuh"
 
-vec3<int> mysize = {200, 200, 100};
+vec3<int> mysize = {100, 100, 16};
 
 void reshapeFunc(int w, int h);
 
@@ -228,8 +228,6 @@ void reshapeFunc(int w, int h) {
 }
 
 void doStuff() {
-    setTime(timer.get());
-
     checkCudaError(cudaGraphicsMapResources(1, &cuda_pbo_resource, nullptr));
     size_t num_bytes;
     checkCudaError(cudaGraphicsResourceGetMappedPointer((void**)&d_dst, &num_bytes, cuda_pbo_resource));
