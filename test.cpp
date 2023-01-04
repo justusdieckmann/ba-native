@@ -10,13 +10,13 @@ static void error_callback(int error, const char* description) {
 }
 
 void exitWithUsage() {
-    std::cerr << "Usage: ./test [-d <xdim> <ydim> <zdim>] [-g <nGPUs>] [-n <iterations>] [-e <exportFile>]" << std::endl;
+    std::cerr << "Usage: ./test [-d <xdim> <ydim> <zdim>] [-g <nGPUs>] [-n <iterations>] [-i <importFile] [-e <exportFile>]" << std::endl;
     exit(-1);
 }
 
-int getIntArg(char* s) {
+int getIntArg(char* s, bool allowZero = false) {
     int i = std::atoi(s);
-    if (i <= 0) {
+    if (i < 0 || (i == 0 && !allowZero)) {
         exitWithUsage();
     }
     return i;
@@ -44,7 +44,10 @@ int main(int argc, char** argv) {
                 gpus = getIntArg(argv[i]);
                 break;
             case 'n':
-                iterations = getIntArg(argv[i]);
+                iterations = getIntArg(argv[i], true);
+                break;
+            case 'i':
+                importFile = std::string(argv[i]);
                 break;
             case 'e':
                 exportFile = std::string(argv[i]);
@@ -54,7 +57,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    initSimulation(size.x, size.y, size.z, gpus);
+    initSimulation(size.x, size.y, size.z, gpus, importFile);
 
     Timer t = Timer();
 

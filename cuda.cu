@@ -136,18 +136,7 @@ __device__ inline void collisionStep(cell_t &cell) {
     }
 }
 
-__global__ void updateCollision(cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + zoffset;
-    if (x >= size.x || y >= size.y || z >= zsize + zoffset) {
-        return;
-    }
-    size_t i = pack(size.x, size.y, size.z, x, y, z);
-    collisionStep(src[i]);
-}
-
-__global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
+__global__ void update(cell_t *dst, cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x;
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
     size_t z = blockIdx.z * blockDim.z + threadIdx.z + zoffset;
@@ -174,6 +163,8 @@ __global__ void updateStreaming(cell_t *dst, cell_t *src, vec3<size_t> size, siz
         }
         dst[index][i] = src[pack(size.x, size.y, size.z, sx, sy, sz)][i];
     }
+
+    collisionStep(dst[index]);
 }
 
 __device__ unsigned char floatToChar(float f) {
@@ -212,7 +203,7 @@ void render(uchar4 *img, const int width, const int height) {
     cudaDeviceSynchronize();
 }
 
-void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
+void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const std::string &importFile) {
     size = {xdim, ydim, zdim};
     cells = xdim * ydim * zdim;
 
@@ -249,26 +240,28 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
         gpuStructs.push_back(gpu);
     }
 
-    for (int x = 0; x < size.x; x++) {
-        for (int y = 0; y < size.y; y++) {
-            for (int z = 0; z < size.z; z++) {
-                for (int i = 0; i < Q; i++) {
-                    float f = feq(i, 0.1f, {.001f, 0, 0});
-                    u1[pack(size.x, size.y, size.z, x, y, z)][i] = f;
-                    u2[pack(size.x, size.y, size.z, x, y, z)][i] = f;
-                }
-
-                if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.z - 2 || // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
-                    std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
-                    auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
-                    parts->sign = 0;
-                    parts->exponent = 255;
-                    if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2 || z <= 1 || z >= size.z - 2) {
-                        parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
-                    } else {
-                        parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
+    if (!importFile.empty()) {
+        importFrame(importFile);
+    } else {
+        for (int x = 0; x < size.x; x++) {
+            for (int y = 0; y < size.y; y++) {
+                for (int z = 0; z < size.z; z++) {
+                    for (int i = 0; i < Q; i++) {
+                        float f = feq(i, 0.1f, {.001f, 0, 0});
+                        u1[pack(size.x, size.y, size.z, x, y, z)][i] = f;
                     }
-                    u2[pack(size.x, size.y, size.z, x, y, z)][0] = u1[pack(size.x, size.y, size.z, x, y, z)][0];
+
+                    if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.z - 2 || // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
+                        std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
+                        auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
+                        parts->sign = 0;
+                        parts->exponent = 255;
+                        if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2 || z <= 1 || z >= size.z - 2) {
+                            parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
+                        } else {
+                            parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
+                        }
+                    }
                 }
             }
         }
@@ -276,7 +269,6 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus) {
 
     for (auto gpu : gpuStructs) {
         gpuErrchk(cudaMemcpyAsync(&gpu.data1[gpu.mainOffset], &u1[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
-        gpuErrchk(cudaMemcpyAsync(&gpu.data2[gpu.mainOffset], &u2[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
     }
     syncStreams();
 }
@@ -297,6 +289,13 @@ void updateHost() {
     for (auto gpu : gpuStructs) {
         gpuErrchk(cudaMemcpy(&u1[gpu.mainGlobalIndex], &gpu.data1[gpu.mainOffset], gpu.mainLayers * bytesPerLayer,
                              cudaMemcpyDeviceToHost));
+    }
+}
+
+void updateDevice() {
+    for (auto gpu: gpuStructs) {
+        gpuErrchk(cudaMemcpy(&gpu.data1[gpu.mainOffset], &u1[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer,
+                cudaMemcpyHostToDevice));
     }
 }
 
@@ -331,11 +330,10 @@ void simulateStep() {
                 (size.y + threadsPerBlock.y) / threadsPerBlock.y,
                 (gpu.mainLayers + threadsPerBlock.z) / threadsPerBlock.z
         );
-        updateCollision<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
-        updateStreaming<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(gpu.data2, gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers);
-
-        // data1 is always pointing to up-to-date buffer.
-        std::swap(gpu.data1, gpu.data2);
+        update<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
+                gpu.data2, gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers
+        );
+        std::swap(gpu.data1, gpu.data2); // data1 is always pointing to up-to-date buffer.
     }
     std::swap(u1, u2);
     syncStreams();
@@ -356,38 +354,24 @@ void printLayer(size_t z) {
 }
 
 void exportFrame(const std::string& filename) {
+
+    updateHost();
+
     std::ofstream out;
     out.open(filename, std::ios::out | std::ios::binary);
 
     for (auto gpu : gpuStructs) {
         gpuErrchk(cudaMemcpy(&u1[gpu.mainGlobalIndex], &gpu.data1[gpu.mainOffset], gpu.mainLayers * bytesPerLayer, cudaMemcpyDeviceToHost));
-        out.write(reinterpret_cast<const char *>(&u1[gpu.mainGlobalIndex]), gpu.mainLayers * bytesPerLayer);
     }
+
+    out.write(reinterpret_cast<const char *>(u1), cells * sizeof(cell_t));
 
     out.close();
 }
 
-void importFrame() {
-/*
-    turnOffFan();
-
-    std::ifstream in;
-    in.open("scenario.dat", std::ios::in | std::ios::binary);
-
-    for (int x = 1; x < SIZE.x - 1; x++) {
-        for (int y = 1; y < SIZE.y - 1; y++) {
-            for (int z = 1; z < SIZE.z - 1; z++) {
-                int i = pack(SIZE.x, SIZE.y, SIZE.z, x, y, z);
-                in.read(reinterpret_cast<char *>(&u1[i].x), sizeof(float));
-                in.read(reinterpret_cast<char *>(&u1[i].y), sizeof(float));
-                in.read(reinterpret_cast<char *>(&u1[i].z), sizeof(float));
-                in.read(reinterpret_cast<char *>(&p1[i]), sizeof(float));
-            }
-        }
-    }
-    gpuErrchk(cudaMemcpy(cudau1, u1, sizeof(glm::vec3) * CELLS, cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(cudap1, p1, sizeof(float) * CELLS, cudaMemcpyHostToDevice));
-    in.close();
-    */
+void importFrame(const std::string& importFile) {
+    std::ifstream infile(importFile, std::ios_base::binary);
+    infile.read(reinterpret_cast<char *>(u1), cells * sizeof(cell_t));
+    updateDevice();
 }
 

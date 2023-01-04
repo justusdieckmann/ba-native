@@ -45,7 +45,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             exportFrame("scenario.dat");
             break;
         case GLFW_KEY_I:
-            importFrame();
+            importFrame("import.dat");
             break;
         default:
             break;
@@ -315,7 +315,7 @@ void graphics() {
 }
 
 int main() {
-    initSimulation(mysize.x, mysize.y, mysize.z, 1);
+    initSimulation(mysize.x, mysize.y, mysize.z, 1, "");
     togglePause();
 
     glfwSetErrorCallback(error_callback);

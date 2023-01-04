@@ -7,7 +7,7 @@
 
 void render(uchar4* img, int width, int height);
 
-void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus);
+void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const std::string&);
 
 void printLayer(size_t z);
 
@@ -33,6 +33,6 @@ void printP(size_t z);
 
 void exportFrame(const std::string& filename);
 
-void importFrame();
+void importFrame(const std::string&);
 
 #endif //GASSIMULATION_CUDA_CUH
