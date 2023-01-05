@@ -136,14 +136,15 @@ __device__ inline void collisionStep(cell_t &cell) {
     }
 }
 
-__global__ void update(cell_t *dst, cell_t *src, vec3<size_t> size, size_t zoffset, size_t zsize) {
-    size_t x = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = blockIdx.z * blockDim.z + threadIdx.z + zoffset;
-    if (x >= size.x || y >= size.y || z >= zsize + zoffset) {
+__global__ void update(cell_t *dst, cell_t *src, size_t worksize, vec3<size_t> globalsize, size_t zoffset) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= worksize) {
         return;
     }
-    size_t index = pack(size.x, size.y, size.z, x, y, z);
+    size_t x = i % globalsize.x;
+    size_t y = (i / globalsize.x) % globalsize.y;
+    size_t z = (i / (globalsize.x * globalsize.y)) + zoffset;
+    size_t index = i + zoffset * globalsize.x * globalsize.y;
 
     floatparts* parts = (floatparts*) &src[index][0];
 
@@ -158,10 +159,10 @@ __global__ void update(cell_t *dst, cell_t *src, vec3<size_t> size, size_t zoffs
         int sx = x + (int) offsets[i].x;
         int sy = y + (int) offsets[i].y;
         int sz = z + (int) offsets[i].z;
-        if (sx < 0 || sy < 0 || sz < 0 || sx >= size.x || sy >= size.y || sz >= size.z) {
+        if (sx < 0 || sy < 0 || sz < 0 || sx >= globalsize.x || sy >= globalsize.y || sz >= globalsize.z) {
             continue;
         }
-        dst[index][i] = src[pack(size.x, size.y, size.z, sx, sy, sz)][i];
+        dst[index][i] = src[pack(globalsize.x, globalsize.y, globalsize.z, sx, sy, sz)][i];
     }
 
     collisionStep(dst[index]);
@@ -324,14 +325,13 @@ void simulateStep() {
 
     for (auto &gpu : gpuStructs) {
         cudaSetDevice(gpu.device);
-        dim3 threadsPerBlock(8, 8, 8);
+        dim3 threadsPerBlock(512);
+        size_t worksize = size.x * size.y * gpu.mainLayers;
         dim3 numBlocks(
-                (size.x + threadsPerBlock.x) / threadsPerBlock.x,
-                (size.y + threadsPerBlock.y) / threadsPerBlock.y,
-                (gpu.mainLayers + threadsPerBlock.z) / threadsPerBlock.z
+                (worksize + threadsPerBlock.x - 1) / threadsPerBlock.x
         );
         update<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
-                gpu.data2, gpu.data1, size, gpu.mainOffset / elementsPerLayer, gpu.mainLayers
+                gpu.data2, gpu.data1, worksize, size, gpu.mainOffset / elementsPerLayer
         );
         std::swap(gpu.data1, gpu.data2); // data1 is always pointing to up-to-date buffer.
     }
