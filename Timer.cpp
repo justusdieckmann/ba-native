@@ -4,9 +4,9 @@ using std::chrono::time_point;
 using std::chrono::duration;
 using std::chrono::steady_clock;
 
-float Timer::get() {
+double Timer::get() {
     if (this->running) {
-        duration<float> d = steady_clock::now() - this->starttime;
+        duration<double> d = steady_clock::now() - this->starttime;
         return (this->elapsed + d).count();
     } else {
         return this->elapsed.count();
@@ -14,7 +14,7 @@ float Timer::get() {
 }
 
 void Timer::reset() {
-    this->elapsed = duration<float>(0);
+    this->elapsed = duration<double>(0);
     if (this->running) {
         this->starttime = steady_clock::now();
     }
@@ -34,12 +34,12 @@ void Timer::stop() {
     this->elapsed += steady_clock::now() - this->starttime;
 }
 
-float Timer::round() {
+double Timer::round() {
     if (!this->running)
         return 0;
 
     auto now = steady_clock::now();
-    duration<float> d = now - this->starttime;
+    duration<double> d = now - this->starttime;
     elapsed += d;
     this->starttime = now;
     return d.count();

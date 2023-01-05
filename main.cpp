@@ -10,7 +10,6 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
-#include "Timer.h"
 #include "cuda.cuh"
 
 vec3<int> mysize = {100, 100, 16};
@@ -113,8 +112,6 @@ uchar4* d_dst = nullptr;
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource* cuda_pbo_resource;  // handles OpenGL-CUDA exchange
 
-Timer timer;
-
 int imageW = 800, imageH = 600;
 
 GLFWwindow* window;
@@ -203,7 +200,7 @@ void initOpenGLBuffers(int w, int h) {
     glGenBuffers(1, &gl_PBO);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, gl_PBO);
     glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, w * h * 4, h_Src, GL_STREAM_COPY);
-    // While a PBO is registered to CUDA, it can't be used
+    // While a PBO is registered to CUDA, it can'timer be used
     // as the destination for OpenGL drawing calls.
     // But in our particular case OpenGL is only used
     // to display the content of the PBO, specified by CUDA kernels,

@@ -4,6 +4,10 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include "vec3.h"
+#include "Timer.h"
+
+extern Timer timer;
+extern double time_split;
 
 void render(uchar4* img, int width, int height);
 

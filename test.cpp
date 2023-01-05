@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <iostream>
 
-#include "Timer.h"
 #include "cuda.cuh"
 
 static void error_callback(int error, const char* description) {
@@ -59,13 +58,13 @@ int main(int argc, char** argv) {
 
     initSimulation(size.x, size.y, size.z, gpus, importFile);
 
-    Timer t = Timer();
-
-    t.start();
-
     for (int i = 0; i < iterations; i++) {
+        timer.start();
         simulateStep();
-        std::cout << t.round() << std::endl;
+        double endTime = timer.round();
+
+        std::cout << endTime << " / " << (endTime - time_split) << std::endl;
+        timer = Timer();
     }
 
     if (!exportFile.empty()) {

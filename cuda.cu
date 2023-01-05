@@ -5,6 +5,9 @@
 #include <fstream>
 #include <vector>
 
+Timer timer = Timer();
+double time_split;
+
 const int FLAG_OBSTACLE = 1 << 1;
 const int FLAG_KEEP_VELOCITY = 1 << 2;
 
@@ -322,7 +325,7 @@ void simulateStep() {
     }
 
     syncStreams();
-
+    time_split = timer.get();
     for (auto &gpu : gpuStructs) {
         cudaSetDevice(gpu.device);
         dim3 threadsPerBlock(512);

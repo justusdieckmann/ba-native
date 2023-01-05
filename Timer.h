@@ -8,15 +8,15 @@ using std::chrono::duration;
 
 class Timer {
     time_point<std::chrono::steady_clock> starttime;
-    duration<float> elapsed = duration<float>(0);
+    duration<double> elapsed = duration<double>(0);
     bool running = false;
 
 public:
-    float get();
+    double get();
     void start();
     void stop();
     void reset();
-    float round();
+    double round();
 };
 
 
