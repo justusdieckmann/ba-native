@@ -207,6 +207,42 @@ void render(uchar4 *img, const int width, const int height) {
     cudaDeviceSynchronize();
 }
 
+__device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, vec3<size_t> globalSize) {
+    for (int i = 0; i < Q; i++) {
+        float f = feq(i, 0.1f, {.001f, 0, 0});
+        cell[i] = f;
+    }
+
+    if (x <= 1 || y <= 1 || z <= 1 || x >= globalSize.x - 2 || y >= globalSize.y - 2 || z >= globalSize.z - 2 ||
+        std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
+        // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
+        // x == 2 || y == 3 || y == 4 ) {
+        auto *parts = (floatparts *) &cell[0];
+        parts->sign = 0;
+        parts->exponent = 255;
+        if (x <= 1 || x >= globalSize.x - 2 || y <= 1 || y >= globalSize.y - 2 || z <= 1 || z >= globalSize.z - 2) {
+            parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
+        } else {
+            parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
+        }
+    }
+}
+
+
+__global__ void init(cell_t *dst, size_t worksize, vec3<size_t> globalsize, size_t zpaddingtop, size_t zoffset) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= worksize) {
+        return;
+    }
+
+    size_t x = i % globalsize.x;
+    size_t y = (i / globalsize.x) % globalsize.y;
+    size_t z = (i / (globalsize.x * globalsize.y)) + zoffset;
+    size_t index = i + zpaddingtop * globalsize.x * globalsize.y;
+
+    generate(dst[index], x, y, z, globalsize);
+}
+
 void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const std::string &importFile) {
     size = {xdim, ydim, zdim};
     cells = xdim * ydim * zdim;
@@ -246,33 +282,28 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const st
 
     if (!importFile.empty()) {
         importFrame(importFile);
+        for (auto gpu : gpuStructs) {
+            gpuErrchk(cudaMemcpyAsync(&gpu.data1[gpu.mainOffset], &u1[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
+        }
     } else {
-        for (int x = 0; x < size.x; x++) {
+        for (auto &gpu : gpuStructs) {
+            cudaSetDevice(gpu.device);
+            dim3 threadsPerBlock(512);
+            size_t worksize = size.x * size.y * gpu.mainLayers;
+            dim3 numBlocks(
+                    (worksize + threadsPerBlock.x - 1) / threadsPerBlock.x
+            );
+            init<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
+                    gpu.data1, worksize, size, gpu.mainOffset / elementsPerLayer, gpu.mainGlobalIndex / elementsPerLayer
+            );
+        }
+        /*for (int x = 0; x < size.x; x++) {
             for (int y = 0; y < size.y; y++) {
                 for (int z = 0; z < size.z; z++) {
-                    for (int i = 0; i < Q; i++) {
-                        float f = feq(i, 0.1f, {.001f, 0, 0});
-                        u1[pack(size.x, size.y, size.z, x, y, z)][i] = f;
-                    }
-
-                    if (x <= 1 || y <= 1 || z <= 1 || x >= size.x - 2 || y >= size.y - 2 || z >= size.z - 2 || // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
-                        std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
-                        auto* parts = (floatparts*) &u1[pack(size.x, size.y, size.z, x, y, z)][0];
-                        parts->sign = 0;
-                        parts->exponent = 255;
-                        if (x <= 1 || x >= size.x - 2 || y <= 1 || y >= size.y - 2 || z <= 1 || z >= size.z - 2) {
-                            parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
-                        } else {
-                            parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
-                        }
-                    }
+                    generate(u1[pack(size.x, size.y, size.z, x, y, z)], x, y, z, size);
                 }
             }
-        }
-    }
-
-    for (auto gpu : gpuStructs) {
-        gpuErrchk(cudaMemcpyAsync(&gpu.data1[gpu.mainOffset], &u1[gpu.mainGlobalIndex], gpu.mainLayers * bytesPerLayer, cudaMemcpyDefault, streams[gpu.device]));
+        }*/
     }
     syncStreams();
 }
