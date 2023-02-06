@@ -149,7 +149,8 @@ __global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const ve
     size_t z = (i / (globalsize.x * globalsize.y)) + zoffset;
     size_t index = i + zoffset * globalsize.x * globalsize.y;
 
-    floatparts* parts = (floatparts*) &src[index][0];
+    cell_t dest = src[index];
+    floatparts* parts = (floatparts*) &dest;
 
     if (parts->exponent == 255) {
         if (parts->mantissa & FLAG_KEEP_VELOCITY) {
@@ -165,10 +166,11 @@ __global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const ve
         if (sx < 0 || sy < 0 || sz < 0 || sx >= globalsize.x || sy >= globalsize.y || sz >= globalsize.z) {
             continue;
         }
-        dst[index][i] = src[pack(globalsize.x, globalsize.y, globalsize.z, sx, sy, sz)][i];
+        dest[i] = src[pack(globalsize.x, globalsize.y, globalsize.z, sx, sy, sz)][i];
     }
 
-    collisionStep(dst[index]);
+    collisionStep(dest);
+    dst[index] = dest;
 }
 
 __device__ unsigned char floatToChar(float f) {
