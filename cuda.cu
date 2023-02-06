@@ -107,7 +107,7 @@ __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, s
     return (z * h + y) * w + x;
 }
 
-__device__ __host__ inline float feq(size_t i, float p, const vec3f& v) {
+__device__ __host__ inline float feq(const size_t i, const float p, const vec3f& v) {
     float wi = wis[i];
     float c = cellwidth;
     float dot = offsets[i] * c * v;
@@ -139,7 +139,7 @@ __device__ inline void collisionStep(cell_t &cell) {
     }
 }
 
-__global__ void update(cell_t *dst, cell_t *src, size_t worksize, vec3<size_t> globalsize, size_t zoffset) {
+__global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const vec3<size_t> globalsize, const size_t zoffset) {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= worksize) {
         return;
@@ -207,7 +207,7 @@ void render(uchar4 *img, const int width, const int height) {
     cudaDeviceSynchronize();
 }
 
-__device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, vec3<size_t> globalSize) {
+__device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, const vec3<size_t> globalSize) {
     for (int i = 0; i < Q; i++) {
         float f = feq(i, 0.1f, {.001f, 0, 0});
         cell[i] = f;
@@ -229,7 +229,7 @@ __device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, vec3
 }
 
 
-__global__ void init(cell_t *dst, size_t worksize, vec3<size_t> globalsize, size_t zpaddingtop, size_t zoffset) {
+__global__ void init(cell_t *dst, size_t worksize, const vec3<size_t> globalsize, size_t zpaddingtop, size_t zoffset) {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= worksize) {
         return;
@@ -359,7 +359,7 @@ void simulateStep() {
     time_split = timer.get();
     for (auto &gpu : gpuStructs) {
         cudaSetDevice(gpu.device);
-        dim3 threadsPerBlock(512);
+        dim3 threadsPerBlock(1024);
         size_t worksize = size.x * size.y * gpu.mainLayers;
         dim3 numBlocks(
                 (worksize + threadsPerBlock.x - 1) / threadsPerBlock.x
