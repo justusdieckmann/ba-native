@@ -28,7 +28,7 @@ add_executable(GasSimulation "cuda.cu" "cuda.cuh" "main.cpp" "Timer.cpp" "Timer.
 target_link_libraries(GasSimulation glfw glad glm)
 
 set_target_properties(GasSimulation PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON)
+        CUDA_ARCHITECTURES "52;62;86")
 endif()
 
 add_executable(test "cuda.cu" "cuda.cuh" "test.cpp" "Timer.cpp" "Timer.h")
@@ -36,4 +36,4 @@ add_executable(test "cuda.cu" "cuda.cuh" "test.cpp" "Timer.cpp" "Timer.h")
 target_link_libraries(test glm)
 
 set_target_properties(test PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON)
+        CUDA_ARCHITECTURES "52;62;86")
