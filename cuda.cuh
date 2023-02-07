@@ -13,8 +13,6 @@ void render(uchar4* img, int width, int height);
 
 void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const std::string&);
 
-void printLayer(size_t z);
-
 void simulateStep();
 
 void togglePause();
@@ -28,12 +26,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
         if (abort) exit(code);
     }
 }
-
-void setFan(bool fan);
-
-bool getFan();
-
-void printP(size_t z);
 
 void exportFrame(const std::string& filename);
 

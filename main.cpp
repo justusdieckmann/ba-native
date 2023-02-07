@@ -7,7 +7,6 @@
 #include <GLFW/glfw3.h>
 #include <iostream>
 
-#include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
 #include "cuda.cuh"
@@ -33,9 +32,6 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
     switch (key) {
         case GLFW_KEY_ESCAPE:
             glfwSetWindowShouldClose(window, GLFW_TRUE);
-            break;
-        case GLFW_KEY_SPACE:
-            setFan(!getFan());
             break;
         case GLFW_KEY_P:
             togglePause();

@@ -1,6 +1,5 @@
 #include "cuda.cuh"
 #include "array.h"
-#include <cstdio>
 #include <cmath>
 #include <fstream>
 #include <vector>
@@ -8,8 +7,8 @@
 Timer timer = Timer();
 double time_split;
 
-const int FLAG_OBSTACLE = 1 << 1;
-const int FLAG_KEEP_VELOCITY = 1 << 2;
+const int FLAG_OBSTACLE = 1 << 0;
+const int FLAG_KEEP_VELOCITY = 1 << 1;
 
 typedef struct {
     unsigned int mantissa : 23;
@@ -41,12 +40,10 @@ std::vector<gpu_t> gpuStructs;
 
 cudaStream_t *streams;
 
-__managed__ float deltaT = 0.001f;
+__managed__ float deltaT = 1.f;
 
-__managed__ float tau = 0.00065;
-__managed__ float cellwidth = .01f;
-
-bool desiredFanStatus = false;
+__managed__ float tau = 0.65;
+__managed__ float cellwidth = 1.f;
 
 bool pause = false;
 
@@ -115,8 +112,6 @@ __device__ __host__ inline float feq(const size_t i, const float p, const vec3f&
 }
 
 __device__ inline void collisionStep(cell_t &cell) {
-    float p = 0;
-    float c = cellwidth;
     floatparts* parts = (floatparts*) &cell[0];
     if (parts->exponent == 255) {
         if (parts->mantissa & FLAG_OBSTACLE) {
@@ -127,10 +122,11 @@ __device__ inline void collisionStep(cell_t &cell) {
         }
         return;
     }
+    float p = 0;
     vec3f vp {0, 0, 0};
     for (size_t i = 0; i < Q; i++) {
         p += cell[i];
-        vp += offsets[i] * c * cell[i];
+        vp += offsets[i] * cellwidth * cell[i];
     }
     vec3f v = p == 0 ? vp : vp * (1 / p);
 
@@ -174,7 +170,7 @@ __global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const ve
 }
 
 __device__ unsigned char floatToChar(float f) {
-    return (unsigned char) min(max((f * 200.f + 1.f) * 127.f, 0.f), 255.f);
+    return (unsigned char) min(max((f * 10.f + 1.f) * 127.f, 0.f), 255.f);
 }
 
 void syncStreams() {
@@ -211,14 +207,12 @@ void render(uchar4 *img, const int width, const int height) {
 
 __device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, const vec3<size_t> globalSize) {
     for (int i = 0; i < Q; i++) {
-        float f = feq(i, 0.1f, {.001f, 0, 0});
+        float f = feq(i, 1.f, {.1f, 0, 0});
         cell[i] = f;
     }
 
     if (x <= 1 || y <= 1 || z <= 1 || x >= globalSize.x - 2 || y >= globalSize.y - 2 || z >= globalSize.z - 2 ||
         std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
-        // x == 50 && (y >= 40 && y <= 45 || y >= 55 && y <= 60)) {
-        // x == 2 || y == 3 || y == 4 ) {
         auto *parts = (floatparts *) &cell[0];
         parts->sign = 0;
         parts->exponent = 255;
@@ -314,14 +308,6 @@ void togglePause() {
     pause = !pause;
 }
 
-void setFan(bool fan) {
-    desiredFanStatus = fan;
-}
-
-bool getFan() {
-    return desiredFanStatus;
-}
-
 void updateHost() {
     for (auto gpu : gpuStructs) {
         gpuErrchk(cudaMemcpy(&u1[gpu.mainGlobalIndex], &gpu.data1[gpu.mainOffset], gpu.mainLayers * bytesPerLayer,
@@ -335,7 +321,6 @@ void updateDevice() {
                 cudaMemcpyHostToDevice));
     }
 }
-
 
 void simulateStep() {
     if (pause) {
@@ -373,20 +358,6 @@ void simulateStep() {
     }
     std::swap(u1, u2);
     syncStreams();
-}
-
-void printLayer(size_t z) {
-    gpuErrchk(cudaMemcpy(u1, gpuStructs[0].data1, sizeof(cell_t) * cells, cudaMemcpyDeviceToHost));
-
-    for (size_t y = 0; y < 5u; y++) {
-        for (size_t x = 0; x < 5u; x++) {
-            cell_t v = u1[pack(size.x, size.y, size.z, x, y, z)];
-            printf("(%f,%f,%f), ", v[0], v[1], v[2]);
-        }
-        printf("\n");
-    }
-    printf("\n");
-
 }
 
 void exportFrame(const std::string& filename) {
