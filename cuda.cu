@@ -155,7 +155,7 @@ __global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const ve
         }
     }
 
-    for (int i = 0; i < Q; i++) {
+    for (int i = 1; i < Q; i++) {
         int sx = x + (int) offsets[i].x;
         int sy = y + (int) offsets[i].y;
         int sz = z + (int) offsets[i].z;
@@ -293,13 +293,6 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const st
                     gpu.data1, worksize, size, gpu.mainOffset / elementsPerLayer, gpu.mainGlobalIndex / elementsPerLayer
             );
         }
-        /*for (int x = 0; x < size.x; x++) {
-            for (int y = 0; y < size.y; y++) {
-                for (int z = 0; z < size.z; z++) {
-                    generate(u1[pack(size.x, size.y, size.z, x, y, z)], x, y, z, size);
-                }
-            }
-        }*/
     }
     syncStreams();
 }
