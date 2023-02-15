@@ -42,7 +42,7 @@ cudaStream_t *streams;
 
 __managed__ float deltaT = 1.f;
 
-__managed__ float tau = 0.65;
+__managed__ float tau = 0.63;
 __managed__ float cellwidth = 1.f;
 
 bool pause = false;
@@ -182,7 +182,7 @@ void syncStreams() {
 __global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = 8;
+    size_t z = 24;
 
     size_t iP = pack(size.x, size.y, size.z, x, y, z);
     size_t iI = (size.y - y - 1) * size.x + x; // Invert opengl image.
@@ -207,19 +207,24 @@ void render(uchar4 *img, const int width, const int height) {
 
 __device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, const vec3<size_t> globalSize) {
     for (int i = 0; i < Q; i++) {
-        float f = feq(i, 1.f, {.1f, 0, 0});
+        float f = feq(i, 1.f, {0, 0, 0});
         cell[i] = f;
     }
 
-    if (x <= 1 || y <= 1 || z <= 1 || x >= globalSize.x - 2 || y >= globalSize.y - 2 || z >= globalSize.z - 2 ||
-        std::pow(x - 50, 2) + std::pow(y - 50, 2) + std::pow(z - 8, 2) <= 225) {
+    int radius = std::pow(y - 25, 2) + std::pow(z - 25, 2);
+
+    if (x <= 0 || y <= 0 || z <= 0 || x >= globalSize.x - 1 || y >= globalSize.y - 1 || z >= globalSize.z - 1 ||
+        radius <= 450 && (x < 50 && radius >= 400 || x == 50 && radius >= 100)) {
         auto *parts = (floatparts *) &cell[0];
         parts->sign = 0;
         parts->exponent = 255;
-        if (x <= 1 || x >= globalSize.x - 2 || y <= 1 || y >= globalSize.y - 2 || z <= 1 || z >= globalSize.z - 2) {
-            parts->mantissa = 1 << 22 | FLAG_KEEP_VELOCITY;
-        } else {
-            parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
+        parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
+    } else {
+        if (x < 50 && radius < 450) {
+            for (int i = 0; i < Q; i++) {
+                float f = feq(i, 1.5f, {0, 0, 0});
+                cell[i] = f;
+            }
         }
     }
 }

@@ -11,7 +11,7 @@
 
 #include "cuda.cuh"
 
-vec3<int> mysize = {100, 100, 16};
+vec3<int> mysize = {300, 50, 50};
 
 void reshapeFunc(int w, int h);
 
@@ -108,7 +108,7 @@ uchar4* d_dst = nullptr;
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource* cuda_pbo_resource;  // handles OpenGL-CUDA exchange
 
-int imageW = 800, imageH = 600;
+int imageW = 1200, imageH = 200;
 
 GLFWwindow* window;
 std::mutex window_mutex;
@@ -322,7 +322,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_DEBUG, GL_TRUE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-    window = glfwCreateWindow(720, 720, "Very good non-game", nullptr, nullptr);
+    window = glfwCreateWindow(1200, 200, "Very good non-game", nullptr, nullptr);
     if (!window)
     {
         glfwTerminate();
