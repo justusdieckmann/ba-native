@@ -28,6 +28,8 @@ struct gpu_t {
     cell_t *data2;
     size_t mainOffset;
     size_t bottomPaddingOffset;
+    float *gas1;
+    float *gas2;
 };
 
 vec3<size_t> size;
@@ -39,6 +41,8 @@ size_t elementsPerLayer;
 std::vector<gpu_t> gpuStructs;
 
 cudaStream_t *streams;
+
+int slice = 24;
 
 __managed__ float deltaT = 1.f;
 
@@ -99,6 +103,9 @@ __constant__ const array<float, Q> wis {
 
 cell_t *u1;
 cell_t *u2;
+
+float *f1;
+float *f2;
 
 __device__ __host__ inline size_t pack(size_t w, size_t h, size_t d, size_t x, size_t y, size_t z) {
     return (z * h + y) * w + x;
@@ -170,7 +177,36 @@ __global__ void update(cell_t *dst, cell_t *src, const size_t worksize, const ve
 }
 
 __device__ unsigned char floatToChar(float f) {
-    return (unsigned char) min(max((f * 10.f + 1.f) * 127.f, 0.f), 255.f);
+    return (unsigned char) min(max((f) * 200.f, 0.f), 255.f);
+}
+
+__global__ void updateSmoke(float *dst, float *src, cell_t *air, const size_t worksize, const vec3<size_t> globalsize, const size_t zoffset) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= worksize) {
+        return;
+    }
+    size_t x = i % globalsize.x;
+    size_t y = (i / globalsize.x) % globalsize.y;
+    size_t z = (i / (globalsize.x * globalsize.y)) + zoffset;
+    size_t index = i + zoffset * globalsize.x * globalsize.y;
+
+    cell_t cell = air[index];
+    floatparts* parts = (floatparts*) &cell;
+
+    float d = src[index];
+
+    for (int i = 1; i < Q; i++) {
+        int sx = x + (int) offsets[i].x;
+        int sy = y + (int) offsets[i].y;
+        int sz = z + (int) offsets[i].z;
+        if (sx < 0 || sy < 0 || sz < 0 || sx >= globalsize.x || sy >= globalsize.y || sz >= globalsize.z) {
+            continue;
+        }
+        int nindex = pack(globalsize.x, globalsize.y, globalsize.z, sx, sy, sz);
+        d += air[index][i] * src[nindex];
+        d -= air[nindex][opposite[i]] * src[index];
+    }
+    dst[index] = d;
 }
 
 void syncStreams() {
@@ -179,30 +215,51 @@ void syncStreams() {
     }
 }
 
-__global__ void renderToBuffer(uchar4 *destImg, cell_t *srcU, vec3<size_t> size) {
+__global__ void renderToBuffer(uchar4 *destImg, const cell_t *srcU, const float *srcF, vec3<size_t> size, int slice) {
     size_t x = blockIdx.x * blockDim.x + threadIdx.x; // Not calculating border cells.
     size_t y = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t z = 24;
+    size_t z = slice;
 
     size_t iP = pack(size.x, size.y, size.z, x, y, z);
-    size_t iI = (size.y - y - 1) * size.x + x; // Invert opengl image.
+    size_t iI = (y) * size.x + x; // Invert opengl image.
     vec3f p{};
-    cell_t cell = srcU[iP];
+    /*cell_t cell = srcU[iP];
     for (int i = 0; i < Q; i++) {
         p += offsets[i] * cell[i];
+    }*/
+    if (isnan(srcU[iP][0])) {
+        destImg[iI] = {0, 0, 0, 255};
+    } else {
+        float f = srcF[iP];
+        destImg[iI] = {
+                floatToChar(f), floatToChar(f), floatToChar(f), 255
+        };
     }
-    destImg[iI] = {
-            floatToChar(p.x), floatToChar(p.y), floatToChar(p.z), 255
-    };
 
 }
 
 void render(uchar4 *img, const int width, const int height) {
+    if (pause) {
+        return;
+    }
     simulateStep();
+    for (auto &gpu : gpuStructs) {
+        cudaSetDevice(gpu.device);
+        dim3 threadsPerBlock(1024);
+        size_t worksize = size.x * size.y * gpu.mainLayers;
+        dim3 numBlocks(
+                (worksize + threadsPerBlock.x - 1) / threadsPerBlock.x
+        );
+        updateSmoke<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
+                gpu.gas2, gpu.gas1, gpu.data1, worksize, size, gpu.mainOffset / elementsPerLayer
+        );
+        std::swap(gpu.gas2, gpu.gas1); // data1 is always pointing to up-to-date buffer.
+    }
+
     dim3 threadsPerBlock(1, 1);
     dim3 numBlocks(size.x, size.y);
-    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, gpuStructs[0].data1, size);
-    cudaDeviceSynchronize();
+    renderToBuffer<<<numBlocks, threadsPerBlock>>>(img, gpuStructs[0].data1, gpuStructs[0].gas1, size, slice);
+    gpuErrchk(cudaDeviceSynchronize());
 }
 
 __device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, const vec3<size_t> globalSize) {
@@ -214,13 +271,13 @@ __device__ __host__ inline void generate(cell_t &cell, int x, int y, int z, cons
     int radius = std::pow(y - 25, 2) + std::pow(z - 25, 2);
 
     if (x <= 0 || y <= 0 || z <= 0 || x >= globalSize.x - 1 || y >= globalSize.y - 1 || z >= globalSize.z - 1 ||
-        radius <= 450 && (x < 50 && radius >= 400 || x == 50 && radius >= 100)) {
+        radius <= 450 && (x < 50 && radius >= 350 || x == 50 && radius >= 100)) {
         auto *parts = (floatparts *) &cell[0];
         parts->sign = 0;
         parts->exponent = 255;
         parts->mantissa = 1 << 22 | FLAG_OBSTACLE;
     } else {
-        if (x < 50 && radius < 450) {
+        if (x < 50 && radius < 350) {
             for (int i = 0; i < Q; i++) {
                 float f = feq(i, 1.5f, {0, 0, 0});
                 cell[i] = f;
@@ -244,6 +301,26 @@ __global__ void init(cell_t *dst, size_t worksize, const vec3<size_t> globalsize
     generate(dst[index], x, y, z, globalsize);
 }
 
+__global__ void initSmoke(float *dst, size_t worksize, const vec3<size_t> globalsize, size_t zpaddingtop, size_t zoffset) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= worksize) {
+        return;
+    }
+
+    int x = i % globalsize.x;
+    int y = (i / globalsize.x) % globalsize.y;
+    int z = (i / (globalsize.x * globalsize.y)) + zoffset;
+    int index = i + zpaddingtop * globalsize.x * globalsize.y;
+
+    int radius = std::pow(y - 25, 2) + std::pow(z - 25, 2);
+
+    if (x < 50 && radius < 350) {
+        dst[index] = 1.0f;
+    } else {
+        dst[index] = 0.0f;
+    }
+}
+
 void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const std::string &importFile) {
     size = {xdim, ydim, zdim};
     cells = xdim * ydim * zdim;
@@ -255,6 +332,8 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const st
 
     u1 = new cell_t[cells];
     u2 = new cell_t[cells];
+    f1 = new float[cells];
+    f2 = new float[cells];
 
     streams = new cudaStream_t[gpus];
 
@@ -278,6 +357,8 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const st
 
         gpuErrchk(cudaMalloc(&gpu.data1, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * bytesPerLayer));
         gpuErrchk(cudaMalloc(&gpu.data2, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * bytesPerLayer));
+        gpuErrchk(cudaMalloc(&gpu.gas1, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * elementsPerLayer * sizeof(float)));
+        gpuErrchk(cudaMalloc(&gpu.gas2, (gpu.mainLayers + toppaddinglayers + bottompaddinglayers) * elementsPerLayer * sizeof(float)));
         gpuStructs.push_back(gpu);
     }
 
@@ -296,6 +377,9 @@ void initSimulation(size_t xdim, size_t ydim, size_t zdim, size_t gpus, const st
             );
             init<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
                     gpu.data1, worksize, size, gpu.mainOffset / elementsPerLayer, gpu.mainGlobalIndex / elementsPerLayer
+            );
+            initSmoke<<<numBlocks, threadsPerBlock, 0, streams[gpu.device]>>>(
+                    gpu.gas1, worksize, size, gpu.mainOffset / elementsPerLayer, gpu.mainGlobalIndex / elementsPerLayer
             );
         }
     }
@@ -380,3 +464,10 @@ void importFrame(const std::string& importFile) {
     updateDevice();
 }
 
+void setSlice(int s) {
+    slice = std::min(std::max(s, 0), (int) size.z - 1);
+}
+
+int getSlice() {
+    return slice;
+}

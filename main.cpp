@@ -42,6 +42,12 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
         case GLFW_KEY_I:
             importFrame("import.dat");
             break;
+        case GLFW_KEY_KP_ADD:
+            setSlice(getSlice() + 1);
+            break;
+        case GLFW_KEY_KP_SUBTRACT:
+            setSlice(getSlice() - 1);
+            break;
         default:
             break;
     }
@@ -322,7 +328,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_DEBUG, GL_TRUE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-    window = glfwCreateWindow(1200, 200, "Very good non-game", nullptr, nullptr);
+    window = glfwCreateWindow(1200, 200, "LBM", nullptr, nullptr);
     if (!window)
     {
         glfwTerminate();

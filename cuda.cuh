@@ -31,4 +31,8 @@ void exportFrame(const std::string& filename);
 
 void importFrame(const std::string&);
 
+void setSlice(int s);
+
+int getSlice();
+
 #endif //GASSIMULATION_CUDA_CUH
